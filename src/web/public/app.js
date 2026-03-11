@@ -629,8 +629,8 @@ class CodemanApp {
     // oversized terminal.write() calls that triggered the stalls.
     // Disable with ?nowebgl URL param if GPU issues return.
     this._webglAddon = null;
-    const skipWebGL = MobileDetection.getDeviceType() !== 'desktop';
-    if (!skipWebGL && !new URLSearchParams(location.search).has('nowebgl') && typeof WebglAddon !== 'undefined') {
+    const skipWebGL = new URLSearchParams(location.search).has('nowebgl');
+    if (!skipWebGL && typeof WebglAddon !== 'undefined') {
       try {
         this._webglAddon = new WebglAddon.WebglAddon();
         this._webglAddon.onContextLoss(() => {
@@ -644,6 +644,16 @@ class CodemanApp {
     }
 
     this._localEchoOverlay = new LocalEchoOverlay(this.terminal);
+
+    // Force dark keyboard on iOS: xterm's hidden textarea needs explicit dark
+    // styling. iOS Safari uses the focused element's color-scheme + background
+    // to determine keyboard appearance, but opacity:0 can make it ignore css.
+    // Setting properties directly on the element ensures iOS detects dark context.
+    const ta = this.terminal?.element?.querySelector('.xterm-helper-textarea');
+    if (ta) {
+      ta.style.colorScheme = 'dark';
+      ta.setAttribute('data-color-scheme', 'dark');
+    }
 
     // On mobile Safari, delay initial fit() to allow layout to settle
     // This prevents 0-column terminals caused by fit() running before container is sized
@@ -671,40 +681,31 @@ class CodemanApp {
       this.terminal.scrollLines(lines);
     }, { passive: false });
 
-    // Touch scrolling - only use custom JS scrolling on desktop
-    // Mobile uses native browser scrolling via CSS touch-action: pan-y
-    const isMobileDevice = MobileDetection.isTouchDevice() && window.innerWidth < 1024;
-
-    if (!isMobileDevice) {
-      // Desktop touch scrolling with custom momentum
+    // Touch momentum handler for xterm.js.
+    // Native scroll (touch-action: pan-y) handles 1:1 tracking during active
+    // touch. xterm.js kills native momentum by programmatically syncing
+    // scrollTop, so we add JS momentum coast after the finger lifts.
+    // We do NOT touch scrollTop or preventDefault during active touch.
+    {
       let touchLastY = 0;
-      let pendingDelta = 0;
+      let touchLastTime = 0;
       let velocity = 0;
-      let lastTime = 0;
+      let lastFrameTime = 0;
       let scrollFrame = null;
-      let isTouching = false;
 
       const viewport = container.querySelector('.xterm-viewport');
+      const DECELERATION = 0.975;
+      const MIN_VELOCITY = 0.5;
 
-      // Single RAF loop handles both touch and momentum
-      const scrollLoop = (timestamp) => {
+      const momentumLoop = (timestamp) => {
         if (!viewport) return;
+        const dt = lastFrameTime ? (timestamp - lastFrameTime) / 16.67 : 1;
+        lastFrameTime = timestamp;
 
-        const dt = lastTime ? (timestamp - lastTime) / 16.67 : 1; // Normalize to 60fps
-        lastTime = timestamp;
-
-        if (isTouching) {
-          // During touch: apply pending delta
-          if (pendingDelta !== 0) {
-            viewport.scrollTop += pendingDelta;
-            pendingDelta = 0;
-          }
-          scrollFrame = requestAnimationFrame(scrollLoop);
-        } else if (Math.abs(velocity) > 0.1) {
-          // Momentum phase
+        if (Math.abs(velocity) > MIN_VELOCITY) {
           viewport.scrollTop += velocity * dt;
-          velocity *= 0.94; // Smooth deceleration
-          scrollFrame = requestAnimationFrame(scrollLoop);
+          velocity *= DECELERATION;
+          scrollFrame = requestAnimationFrame(momentumLoop);
         } else {
           scrollFrame = null;
           velocity = 0;
@@ -713,38 +714,38 @@ class CodemanApp {
 
       container.addEventListener('touchstart', (ev) => {
         if (ev.touches.length === 1) {
-          touchLastY = ev.touches[0].clientY;
-          pendingDelta = 0;
+          if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = null; }
           velocity = 0;
-          isTouching = true;
-          lastTime = 0;
-          if (!scrollFrame) {
-            scrollFrame = requestAnimationFrame(scrollLoop);
-          }
+          touchLastY = ev.touches[0].clientY;
+          touchLastTime = performance.now();
         }
       }, { passive: true });
 
       container.addEventListener('touchmove', (ev) => {
-        if (ev.touches.length === 1 && isTouching) {
+        if (ev.touches.length === 1) {
           const touchY = ev.touches[0].clientY;
+          const now = performance.now();
           const delta = touchLastY - touchY;
-          pendingDelta += delta;
-          velocity = delta * 1.2; // Track for momentum
+          const elapsed = now - touchLastTime || 1;
+          const instantV = (delta / elapsed) * 16.67;
+          velocity = velocity * 0.3 + instantV * 0.7;
           touchLastY = touchY;
+          touchLastTime = now;
         }
       }, { passive: true });
 
       container.addEventListener('touchend', () => {
-        isTouching = false;
-        // Momentum continues in scrollLoop
+        if (Math.abs(velocity) > MIN_VELOCITY) {
+          lastFrameTime = 0;
+          scrollFrame = requestAnimationFrame(momentumLoop);
+        }
       }, { passive: true });
 
       container.addEventListener('touchcancel', () => {
-        isTouching = false;
         velocity = 0;
+        if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = null; }
       }, { passive: true });
     }
-    // Mobile: native scrolling handles touch via CSS
 
     // Welcome message
     this.showWelcome();
@@ -831,10 +832,10 @@ class CodemanApp {
         // Patterns: \x1b[?...c (DA1), \x1b[>...c (DA2), \x1b[...R (CPR), \x1b[...n (DSR)
         if (/^\x1b\[[\?>=]?[\d;]*[cnR]$/.test(data)) return;
 
-        // ── Local Echo Mode ──
-        // When enabled, keystrokes are buffered locally in the overlay for
-        // instant visual feedback.  Nothing is sent to the PTY until Enter
-        // (or a control char) is pressed — avoids out-of-order char delivery.
+        // ── Local Echo Mode (hybrid) ──
+        // Overlay provides instant visual feedback. Keystrokes are also sent
+        // to the PTY immediately so interactive features (slash-command
+        // autocomplete, Ink UI reactions) work in real time.
         if (this._localEchoEnabled) {
           if (data === '\x7f') {
             const source = this._localEchoOverlay?.removeChar();
@@ -853,13 +854,16 @@ class CodemanApp {
               this._pendingInput += data;
               flushInput();
             }
-            // 'pending' = removed unsent text (no PTY backspace needed)
+            if (source === 'pending') {
+              // Hybrid: char was already sent to PTY, send backspace too
+              this._pendingInput += data;
+              flushInput();
+            }
             // false = nothing to remove (swallow the backspace)
             return;
           }
           if (/^[\r\n]+$/.test(data)) {
-            // Enter: send full buffered text + \r to PTY in one shot
-            const text = this._localEchoOverlay?.pendingText || '';
+            // Enter: text was already sent to PTY char by char — just send \r
             this._localEchoOverlay?.clear();
             // Suppress detection so PTY-echoed text isn't re-detected as user input
             this._localEchoOverlay?.suppressBufferDetection();
@@ -870,20 +874,15 @@ class CodemanApp {
               clearTimeout(this._inputFlushTimeout);
               this._inputFlushTimeout = null;
             }
-            if (text) {
-              this._pendingInput += text;
-              flushInput();
-            }
-            // Send \r after a short delay so text arrives first
-            setTimeout(() => {
-              this._pendingInput += '\r';
-              flushInput();
-            }, 80);
+            this._pendingInput += '\r';
+            flushInput();
             return;
           }
           if (data.length > 1 && data.charCodeAt(0) >= 32) {
-            // Paste: append to overlay only (sent on Enter)
+            // Paste: append to overlay for display, send to PTY immediately
             this._localEchoOverlay?.appendText(data);
+            this._pendingInput += data;
+            flushInput();
             return;
           }
           if (data.charCodeAt(0) < 32) {
@@ -910,17 +909,13 @@ class CodemanApp {
               flushInput();
               return;
             }
-            // Tab key: send pending text + Tab to PTY for tab completion.
+            // Tab key: text was already sent to PTY char by char — just send Tab.
             // Set a flag so flushPendingWrites() re-detects buffer text when
             // the PTY response arrives (event-driven, no fixed timer).
             if (data === '\t') {
-              const text = this._localEchoOverlay?.pendingText || '';
               this._localEchoOverlay?.clear();
               this._flushedOffsets?.delete(this.activeSessionId);
               this._flushedTexts?.delete(this.activeSessionId);
-              if (text) {
-                this._pendingInput += text;
-              }
               this._pendingInput += data;
               if (this._inputFlushTimeout) {
                 clearTimeout(this._inputFlushTimeout);
@@ -966,8 +961,8 @@ class CodemanApp {
               }, 300);
               return;
             }
-            // Control chars (Ctrl+C, single ESC): send buffered text + control char immediately
-            const text = this._localEchoOverlay?.pendingText || '';
+            // Control chars (Ctrl+C, single ESC): text was already sent to PTY —
+            // just send the control char. Clear overlay since cursor position changes.
             this._localEchoOverlay?.clear();
             // Suppress detection so PTY-echoed text isn't re-detected as user input
             this._localEchoOverlay?.suppressBufferDetection();
@@ -975,9 +970,6 @@ class CodemanApp {
             // cursor position or abort readline, making flushed text tracking invalid.
             this._flushedOffsets?.delete(this.activeSessionId);
             this._flushedTexts?.delete(this.activeSessionId);
-            if (text) {
-              this._pendingInput += text;
-            }
             this._pendingInput += data;
             if (this._inputFlushTimeout) {
               clearTimeout(this._inputFlushTimeout);
@@ -987,8 +979,10 @@ class CodemanApp {
             return;
           }
           if (data.length === 1 && data.charCodeAt(0) >= 32) {
-            // Printable char: add to overlay only (sent on Enter)
+            // Printable char: add to overlay for display, send to PTY immediately
             this._localEchoOverlay?.addChar(data);
+            this._pendingInput += data;
+            flushInput();
             return;
           }
         }
@@ -1855,7 +1849,13 @@ class CodemanApp {
       if (data.terminalBuffer) {
         this.terminal.clear();
         this.terminal.reset();
+        // Mobile wide-replay (see selectSession for explanation)
+        const isMobileRefresh = MobileDetection.getDeviceType() === 'mobile';
+        const refreshCols = this.terminal.cols;
+        const refreshRows = this.terminal.rows;
+        if (isMobileRefresh) this.terminal.resize(120, refreshRows);
         await this.chunkedTerminalWrite(data.terminalBuffer);
+        if (isMobileRefresh) this.terminal.resize(refreshCols, refreshRows);
         this.terminal.scrollToBottom();
         // Re-position local echo overlay at new prompt location
         this._localEchoOverlay?.rerender();
@@ -3677,7 +3677,13 @@ class CodemanApp {
         _crashDiag.log(`CACHE_WRITE: ${(cachedBuffer.length/1024).toFixed(0)}KB`);
         this.terminal.clear();
         this.terminal.reset();
+        // Mobile wide-replay (see selectSession for explanation)
+        const isMobileCache = MobileDetection.getDeviceType() === 'mobile';
+        const cacheCols = this.terminal.cols;
+        const cacheRows = this.terminal.rows;
+        if (isMobileCache) this.terminal.resize(120, cacheRows);
         await this.chunkedTerminalWrite(cachedBuffer);
+        if (isMobileCache) this.terminal.resize(cacheCols, cacheRows);
         if (selectGen !== this._selectGeneration) { if (this._isLoadingBuffer) this._finishBufferLoad(); this._restoringFlushedState = false; return; }
         this.terminal.scrollToBottom();
         _crashDiag.log('CACHE_DONE');
@@ -3698,6 +3704,17 @@ class CodemanApp {
           _crashDiag.log(`REWRITE: ${(data.terminalBuffer.length/1024).toFixed(0)}KB`);
           this.terminal.clear();
           this.terminal.reset();
+
+          // Mobile wide-replay: write buffer at desktop-width columns so Ink's
+          // absolute cursor positioning renders correctly, then resize back to
+          // mobile width — xterm.js reflows the content naturally.
+          const isMobileReplay = MobileDetection.getDeviceType() === 'mobile';
+          const savedCols = this.terminal.cols;
+          const savedRows = this.terminal.rows;
+          if (isMobileReplay) {
+            this.terminal.resize(120, savedRows);
+          }
+
           // Show truncation indicator if buffer was cut
           if (data.truncated) {
             this.terminal.write('\x1b[90m... (earlier output truncated for performance) ...\x1b[0m\r\n\r\n');
@@ -3705,6 +3722,12 @@ class CodemanApp {
           // Use chunked write for large buffers to avoid UI jank
           await this.chunkedTerminalWrite(data.terminalBuffer);
           if (selectGen !== this._selectGeneration) { if (this._isLoadingBuffer) this._finishBufferLoad(); this._restoringFlushedState = false; return; }
+
+          // Resize back to actual mobile dimensions — triggers xterm.js reflow
+          if (isMobileReplay) {
+            this.terminal.resize(savedCols, savedRows);
+          }
+
           // Ensure terminal is scrolled to bottom after buffer load
           this.terminal.scrollToBottom();
         }
@@ -3986,7 +4009,7 @@ class CodemanApp {
     taskDescription: '',
     completionPhrase: 'COMPLETE',
     maxIterations: 10,
-    caseName: 'testcase',
+    caseName: 'para',
     enableRespawn: false,
     generatedPlan: null,
     planGenerated: false,
@@ -4022,9 +4045,9 @@ class CodemanApp {
 
       const select = document.getElementById('quickStartCase');
 
-      // Build options - existing cases first, then testcase as fallback if not present
+      // Build options - existing cases first, then para as fallback if not present
       let options = '';
-      const hasTestcase = cases.some(c => c.name === 'testcase');
+      const hasPara = cases.some(c => c.name === 'para');
       const isMobile = MobileDetection.getDeviceType() === 'mobile';
       const maxNameLength = isMobile ? 8 : 20; // Truncate to 8 chars on mobile
 
@@ -4035,9 +4058,9 @@ class CodemanApp {
         options += `<option value="${escapeHtml(c.name)}">${escapeHtml(displayName)}</option>`;
       });
 
-      // Add testcase option if it doesn't exist (will be created on first run)
-      if (!hasTestcase) {
-        options = `<option value="testcase">testcase</option>` + options;
+      // Add para option if it doesn't exist (will be created on first run)
+      if (!hasPara) {
+        options = `<option value="para">para</option>` + options;
       }
 
       select.innerHTML = options;
@@ -4054,16 +4077,16 @@ class CodemanApp {
         this.updateDirDisplayForCase(lastUsedCase);
         this.updateMobileCaseLabel(lastUsedCase);
       } else if (cases.length > 0) {
-        // Fallback to testcase or first case
-        const firstCase = cases.find(c => c.name === 'testcase') || cases[0];
+        // Fallback to para or first case
+        const firstCase = cases.find(c => c.name === 'para') || cases[0];
         select.value = firstCase.name;
         this.updateDirDisplayForCase(firstCase.name);
         this.updateMobileCaseLabel(firstCase.name);
       } else {
         // No cases exist yet - show the default case name as directory
-        select.value = 'testcase';
-        document.getElementById('dirDisplay').textContent = '~/codeman-cases/testcase';
-        this.updateMobileCaseLabel('testcase');
+        select.value = 'para';
+        document.getElementById('dirDisplay').textContent = '~/codeman-cases/para';
+        this.updateMobileCaseLabel('para');
       }
 
       // Only add event listener once (on first load)
@@ -4204,7 +4227,7 @@ class CodemanApp {
   }
 
   async runClaude() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
+    const caseName = document.getElementById('quickStartCase').value || 'para';
     const tabCount = Math.min(20, Math.max(1, parseInt(document.getElementById('tabCount').value) || 1));
 
     this.terminal.clear();
@@ -4347,7 +4370,7 @@ class CodemanApp {
   }
 
   async runShell() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
+    const caseName = document.getElementById('quickStartCase').value || 'para';
     const shellCount = Math.min(20, Math.max(1, parseInt(document.getElementById('shellCount').value) || 1));
 
     this.terminal.clear();
@@ -4425,7 +4448,7 @@ class CodemanApp {
   }
 
   async runOpenCode() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
+    const caseName = document.getElementById('quickStartCase').value || 'para';
 
     this.terminal.clear();
     this.terminal.writeln(`\x1b[1;32m Starting OpenCode session in ${caseName}...\x1b[0m`);
@@ -5073,6 +5096,8 @@ class CodemanApp {
       if (size >= 10 && size <= 24) {
         this.terminal.options.fontSize = size;
         document.getElementById('fontSizeDisplay').textContent = size;
+        // Sync overlay font to match (overlay was initialized with the default font size)
+        this._localEchoOverlay?.refreshFont();
       }
     }
   }
@@ -8658,6 +8683,7 @@ class CodemanApp {
     // If user explicitly closed this session's Ralph panel, keep it hidden
     if (this.ralphClosedSessions.has(this.activeSessionId)) {
       panel.style.display = 'none';
+      document.documentElement.classList.remove('ralph-panel-visible');
       return;
     }
 
@@ -8673,10 +8699,12 @@ class CodemanApp {
 
     if (!isEnabled && !hasLoop && !hasTodos && !hasCircuitBreaker && !hasStatusBlock) {
       panel.style.display = 'none';
+      document.documentElement.classList.remove('ralph-panel-visible');
       return;
     }
 
     panel.style.display = '';
+    document.documentElement.classList.add('ralph-panel-visible');
 
     // Calculate completion percentage
     const todos = state?.todos || [];
@@ -11580,7 +11608,7 @@ class CodemanApp {
     const popover = document.getElementById('caseSettingsPopover');
     if (popover.classList.contains('hidden')) {
       // Load settings for current case
-      const caseName = document.getElementById('quickStartCase').value || 'testcase';
+      const caseName = document.getElementById('quickStartCase').value || 'para';
       const settings = this.getCaseSettings(caseName);
       document.getElementById('caseAgentTeams').checked = settings.agentTeams;
       popover.classList.remove('hidden');
@@ -11612,7 +11640,7 @@ class CodemanApp {
   }
 
   onCaseSettingChanged() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
+    const caseName = document.getElementById('quickStartCase').value || 'para';
     const settings = this.getCaseSettings(caseName);
     settings.agentTeams = document.getElementById('caseAgentTeams').checked;
     this.saveCaseSettings(caseName, settings);
@@ -11624,7 +11652,7 @@ class CodemanApp {
   toggleCaseSettingsMobile() {
     const popover = document.getElementById('caseSettingsPopoverMobile');
     if (popover.classList.contains('hidden')) {
-      const caseName = document.getElementById('quickStartCase').value || 'testcase';
+      const caseName = document.getElementById('quickStartCase').value || 'para';
       const settings = this.getCaseSettings(caseName);
       document.getElementById('caseAgentTeamsMobile').checked = settings.agentTeams;
       popover.classList.remove('hidden');
@@ -11642,7 +11670,7 @@ class CodemanApp {
   }
 
   onCaseSettingChangedMobile() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
+    const caseName = document.getElementById('quickStartCase').value || 'para';
     const settings = this.getCaseSettings(caseName);
     settings.agentTeams = document.getElementById('caseAgentTeamsMobile').checked;
     this.saveCaseSettings(caseName, settings);
@@ -11821,9 +11849,9 @@ class CodemanApp {
     let html = '';
     const cases = this.cases || [];
 
-    // Add testcase if not in list
-    const hasTestcase = cases.some(c => c.name === 'testcase');
-    const allCases = hasTestcase ? cases : [{ name: 'testcase' }, ...cases];
+    // Add para if not in list
+    const hasPara = cases.some(c => c.name === 'para');
+    const allCases = hasPara ? cases : [{ name: 'para' }, ...cases];
 
     for (const c of allCases) {
       const isSelected = c.name === currentCase;

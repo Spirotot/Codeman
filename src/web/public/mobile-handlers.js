@@ -52,20 +52,20 @@ const MobileDetection = {
     return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
   },
 
-  /** Check if screen is small (phone-sized, <430px) */
+  /** Check if screen is small (phone-sized, <=430px) */
   isSmallScreen() {
-    return window.innerWidth < 430;
+    return window.innerWidth <= 430;
   },
 
-  /** Check if screen is medium (tablet-sized, 430-768px) */
+  /** Check if screen is medium (tablet-sized, 431-768px) */
   isMediumScreen() {
-    return window.innerWidth >= 430 && window.innerWidth < 768;
+    return window.innerWidth > 430 && window.innerWidth < 768;
   },
 
   /** Get device type based on screen width */
   getDeviceType() {
     const width = window.innerWidth;
-    if (width < 430) return 'mobile';
+    if (width <= 430) return 'mobile';
     if (width < 768) return 'tablet';
     return 'desktop';
   },
@@ -155,30 +155,103 @@ const KeyboardHandler = {
     this.initialViewportHeight = window.visualViewport?.height || window.innerHeight;
     this.lastViewportHeight = this.initialViewportHeight;
 
-    // Simple focus handler - scroll input into view after keyboard appears
+    // --- Keyboard SHOW detection (two signals, either triggers) ---
+
+    // Signal 1: focusin on form inputs (not xterm — see note below)
     this._focusinHandler = (e) => {
       const target = e.target;
+      if (!this.keyboardVisible) {
+        // Only detect keyboard for real form inputs. Do NOT include .xterm —
+        // xterm's hidden textarea gets focus on every tap (including scrolls),
+        // which would falsely trigger keyboard state and set .app to
+        // position:fixed, breaking normal terminal scrolling.
+        // Terminal keyboard is detected via viewport resize (Signal 2).
+        const isFormInput = target &&
+          (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
+           target.isContentEditable) && !target.closest('.xterm');
+        if (isFormInput) {
+          this._showKeyboard();
+        }
+      }
       if (!this.isInputElement(target)) return;
-
-      // Wait for keyboard animation, then scroll input into view
-      setTimeout(() => {
-        this.scrollInputIntoView(target);
-      }, 400);
+      setTimeout(() => this.scrollInputIntoView(target), 400);
     };
     document.addEventListener('focusin', this._focusinHandler);
 
-    // Use visualViewport to detect keyboard and reposition toolbar
+    // Signal 2: visualViewport resize (catches keyboard open when textarea
+    // already had focus — focusin doesn't fire in that case)
     if (window.visualViewport) {
       this._viewportResizeHandler = () => {
-        this.handleViewportResize();
-      };
-      this._viewportScrollHandler = () => {
-        this.updateLayoutForKeyboard();
+        const currentHeight = window.visualViewport.height;
+        const heightDiff = this.initialViewportHeight - currentHeight;
+        if (heightDiff > 150 && !this.keyboardVisible) {
+          this._showKeyboard();
+        }
+        // HIDE detection: viewport growing back means keyboard is closing.
+        // iOS dismiss button hides keyboard without blurring focus, so
+        // focusout never fires. Detect hide when viewport returns close
+        // to initial height. 50px threshold avoids false triggers from
+        // iOS address bar or predictive text fluctuations.
+        // Grace period: suppress for 800ms after show to prevent false hide
+        // during keyboard open animation (viewport height changes gradually,
+        // so early resize events have small heightDiff that looks like "closing").
+        if (this.keyboardVisible && heightDiff < 50 && Date.now() - (this._showTime || 0) > 800) {
+          this._hideKeyboard();
+        }
+        // Update app size when keyboard is visible (tracks animation)
+        if (this.keyboardVisible) {
+          this._resizeAppForKeyboard();
+        }
+        // Update baseline only when keyboard is not visible
+        if (!this.keyboardVisible) {
+          this.initialViewportHeight = currentHeight;
+        }
       };
       window.visualViewport.addEventListener('resize', this._viewportResizeHandler);
-      // Also handle scroll (iOS scrolls viewport when keyboard appears)
+      // Also track scroll — iOS scrolls the visual viewport when keyboard opens
+      this._viewportScrollHandler = () => {
+        if (this.keyboardVisible) this._resizeAppForKeyboard();
+      };
       window.visualViewport.addEventListener('scroll', this._viewportScrollHandler);
     }
+
+    // --- Keyboard HIDE detection (two signals, either triggers) ---
+
+    // Signal 1: focusout — catches blur from tapping outside, switching tabs, etc.
+    this._focusoutHandler = () => {
+      if (!this.keyboardVisible) return;
+      // Wait 500ms for focus to settle — xterm may briefly blur/refocus
+      // its textarea during terminal operations
+      setTimeout(() => {
+        const active = document.activeElement;
+        const stillTyping = active &&
+          (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' ||
+           active.isContentEditable || active.closest('.xterm'));
+        if (!stillTyping) {
+          this._hideKeyboard();
+        }
+      }, 500);
+    };
+    document.addEventListener('focusout', this._focusoutHandler);
+    // Signal 2: visualViewport resize growing back — handled in _viewportResizeHandler above.
+    // Catches iOS dismiss button which hides keyboard without blurring focus.
+  },
+
+  /** Show keyboard state (deduplicated) */
+  _showKeyboard() {
+    if (this.keyboardVisible) return;
+    this.keyboardVisible = true;
+    this._showTime = Date.now();
+    document.body.classList.add('keyboard-visible');
+    this.onKeyboardShow();
+  },
+
+  /** Hide keyboard state (deduplicated — safe to call from multiple signals) */
+  _hideKeyboard() {
+    if (!this.keyboardVisible) return;
+    this.keyboardVisible = false;
+    document.body.classList.remove('keyboard-visible');
+    this.onKeyboardHide();
   },
 
   /** Remove event listeners */
@@ -186,6 +259,10 @@ const KeyboardHandler = {
     if (this._focusinHandler) {
       document.removeEventListener('focusin', this._focusinHandler);
       this._focusinHandler = null;
+    }
+    if (this._focusoutHandler) {
+      document.removeEventListener('focusout', this._focusoutHandler);
+      this._focusoutHandler = null;
     }
     if (this._viewportResizeHandler && window.visualViewport) {
       window.visualViewport.removeEventListener('resize', this._viewportResizeHandler);
@@ -197,100 +274,30 @@ const KeyboardHandler = {
     }
   },
 
-  /** Handle viewport resize (keyboard show/hide) */
-  handleViewportResize() {
-    const currentHeight = window.visualViewport?.height || window.innerHeight;
-    const heightDiff = this.initialViewportHeight - currentHeight;
 
-    // Keyboard appeared (viewport shrunk by more than 150px)
-    if (heightDiff > 150 && !this.keyboardVisible) {
-      this.keyboardVisible = true;
-      document.body.classList.add('keyboard-visible');
-      this.onKeyboardShow();
-    }
-    // Keyboard hidden (viewport grew back close to initial)
-    // Use 100px threshold (not 50) to handle iOS address bar drift,
-    // iOS 26's persistent 24px discrepancy, and Safari bottom bar changes
-    else if (heightDiff < 100 && this.keyboardVisible) {
-      this.keyboardVisible = false;
-      document.body.classList.remove('keyboard-visible');
-      this.onKeyboardHide();
-    }
-
-    // Update baseline when keyboard is not visible — adapts to address bar
-    // state changes, orientation changes, and other viewport shifts
-    if (!this.keyboardVisible) {
-      this.initialViewportHeight = currentHeight;
-    }
-
-    this.updateLayoutForKeyboard();
-    this.lastViewportHeight = currentHeight;
-  },
-
-  /** Update layout when keyboard shows/hides */
-  updateLayoutForKeyboard() {
-    if (!window.visualViewport) return;
-
-    // Only adjust on mobile
-    if (!MobileDetection.isSmallScreen() && !MobileDetection.isMediumScreen()) {
-      this.resetLayout();
-      return;
-    }
-
-    const toolbar = document.querySelector('.toolbar');
-    const accessoryBar = document.querySelector('.keyboard-accessory-bar');
-    const main = document.querySelector('.main');
-
-    if (this.keyboardVisible) {
-      // Calculate keyboard offset
-      const layoutHeight = window.innerHeight;
-      const visualBottom = window.visualViewport.offsetTop + window.visualViewport.height;
-      const keyboardOffset = layoutHeight - visualBottom;
-
-      // Safety: if keyboard is supposedly visible but offset is 0 or negative,
-      // the keyboard is actually gone — force dismiss. This catches cases where
-      // visualViewport.resize fires late or with intermediate values on iOS.
-      if (keyboardOffset <= 0) {
-        this.keyboardVisible = false;
-        document.body.classList.remove('keyboard-visible');
-        this.onKeyboardHide();
-        return;
-      }
-
-      // Move toolbar up above keyboard
-      if (toolbar) {
-        toolbar.style.transform = `translateY(${-keyboardOffset}px)`;
-      }
-
-      // Move accessory bar up (it sits above toolbar)
-      if (accessoryBar) {
-        accessoryBar.style.transform = `translateY(${-keyboardOffset}px)`;
-      }
-
-      // Shrink main content area so terminal doesn't extend behind keyboard
-      // Account for keyboard height + toolbar height (40px) + accessory bar (44px)
-      if (main) {
-        main.style.paddingBottom = `${keyboardOffset + 94}px`;
-      }
-    } else {
-      this.resetLayout();
-    }
+  /** Resize the .app container to visual viewport height so the flex layout
+   *  (including toolbar) fits above the keyboard without fixed positioning. */
+  _resizeAppForKeyboard() {
+    if (!window.visualViewport || !this.keyboardVisible) return;
+    const appEl = document.querySelector('.app');
+    if (!appEl) return;
+    const vv = window.visualViewport;
+    appEl.style.height = `${vv.height}px`;
+    appEl.style.position = 'fixed';
+    appEl.style.top = `${vv.offsetTop}px`;
+    appEl.style.left = '0';
+    appEl.style.right = '0';
   },
 
   /** Reset layout to normal (no keyboard) */
   resetLayout() {
-    const toolbar = document.querySelector('.toolbar');
-    const accessoryBar = document.querySelector('.keyboard-accessory-bar');
-    const main = document.querySelector('.main');
-
-    if (toolbar) {
-      toolbar.style.transform = '';
-    }
-    if (accessoryBar) {
-      accessoryBar.style.transform = '';
-    }
-    if (main) {
-      main.style.paddingBottom = '';
+    const appEl = document.querySelector('.app');
+    if (appEl) {
+      appEl.style.height = '';
+      appEl.style.position = '';
+      appEl.style.top = '';
+      appEl.style.left = '';
+      appEl.style.right = '';
     }
   },
 
@@ -300,6 +307,12 @@ const KeyboardHandler = {
     if (typeof KeyboardAccessoryBar !== 'undefined') {
       KeyboardAccessoryBar.show();
     }
+
+    // Resize app container to fit within the visual viewport (above keyboard).
+    // iOS Safari doesn't reposition fixed-bottom elements above the keyboard
+    // until a user scroll, so instead we shrink the entire app to the visible
+    // area and switch the toolbar to non-fixed (flex child) positioning.
+    this._resizeAppForKeyboard();
 
     // Refit terminal locally AND send resize to server so Claude Code (Ink)
     // knows the actual terminal dimensions. Without this, Ink redraws at the
@@ -322,12 +335,13 @@ const KeyboardHandler = {
 
   /** Called when keyboard hides */
   onKeyboardHide() {
+    // Reset app layout to CSS defaults
+    this.resetLayout();
+
     // Hide keyboard accessory bar
     if (typeof KeyboardAccessoryBar !== 'undefined') {
       KeyboardAccessoryBar.hide();
     }
-
-    this.resetLayout();
 
     // Refit terminal, scroll to bottom, and send resize to restore original dimensions
     setTimeout(() => {
