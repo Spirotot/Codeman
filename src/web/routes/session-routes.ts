@@ -526,7 +526,7 @@ export function registerSessionRoutes(
   //                  replay at that width, then resize to fit.
   app.get('/api/sessions/:id/terminal', async (req) => {
     const { id } = req.params as { id: string };
-    const query = req.query as { tail?: string; source?: string };
+    const query = req.query as { tail?: string; source?: string; cols?: string };
     const session = ctx.sessions.get(id);
 
     if (!session) {
@@ -535,11 +535,18 @@ export function registerSessionRoutes(
 
     // Tmux scrollback source: capture rendered content from tmux pane.
     // This gives proper scrollback (Ink redraws don't destroy history in tmux).
-    // Returns paneCols/paneRows so the client can replay at the correct width.
+    // Pass cols= so the pane is resized to match the client's terminal width
+    // before capture — ensures line breaks are correct without client-side reflow.
     if (query.source === 'tmux') {
-      const tmuxCapture = session.captureTmuxScrollback();
+      const desiredCols = query.cols ? parseInt(query.cols, 10) : undefined;
+      const tmuxCapture = session.captureTmuxScrollback(desiredCols);
       if (tmuxCapture) {
-        const cleanTmux = tmuxCapture.content.replace(LEADING_WHITESPACE_PATTERN, '').replace(/[\s\r\n]+$/, '');
+        // Clean leading/trailing junk, convert \n to \r\n for xterm.js
+        const cleanTmux = tmuxCapture.content
+          .replace(LEADING_WHITESPACE_PATTERN, '')
+          .replace(/[\s\r\n]+$/, '')
+          .split('\n')
+          .join('\r\n');
         return {
           terminalBuffer: cleanTmux,
           status: session.status,

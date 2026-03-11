@@ -196,4 +196,7 @@ export interface TerminalMultiplexer extends EventEmitter {
 
   /** Capture the buffer of a specific pane with ANSI colors preserved. */
   capturePaneBuffer(muxName: string, paneTarget: string): string | null;
+
+  /** Resize a pane to the given dimensions. */
+  resizePane(muxName: string, paneTarget: string, width: number, height: number): boolean;
 }
