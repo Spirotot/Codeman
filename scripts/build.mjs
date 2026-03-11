@@ -48,7 +48,7 @@ appendFileSync(
     'window.ZerolagInputAddon=XtermZerolagInput.ZerolagInputAddon;' +
     'window.LocalEchoOverlay=class extends XtermZerolagInput.ZerolagInputAddon{' +
       'constructor(terminal){' +
-        'super({prompt:{type:"character",char:"\\u276f",offset:2}});' +
+        'super({prompt:{type:"character",char:"\\u276f",offset:2},zIndex:15});' +
         'this.activate(terminal);' +
       '}' +
     '};' +
