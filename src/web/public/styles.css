@@ -116,6 +116,8 @@ body {
   background: var(--bg-dark);
   color: var(--text);
   height: 100vh;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
   overflow: hidden;
 }
 
@@ -124,6 +126,8 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
 }
 
 /* Compact Header */
@@ -4447,6 +4451,7 @@ kbd {
   right: 0;
   width: 340px;
   height: calc(100vh - var(--header-height));
+  height: calc(100dvh - var(--header-height));
   background: var(--bg-card);
   border-left: 1px solid var(--border);
   z-index: 10001;
@@ -5815,6 +5820,7 @@ kbd {
   left: 0;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   pointer-events: none;
   z-index: 999; /* Below windows (1000+), above panels (91) */
 }
@@ -6042,6 +6048,7 @@ kbd {
   right: 20px;
   width: 280px;
   height: calc(100vh - var(--header-height) - var(--toolbar-height) - 40px);
+  height: calc(100dvh - var(--header-height) - var(--toolbar-height) - 40px);
   max-height: 600px;
   min-width: 200px;
   min-height: 300px;

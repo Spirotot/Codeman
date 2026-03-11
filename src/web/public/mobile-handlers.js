@@ -98,14 +98,33 @@ const MobileDetection = {
     }
   },
 
+  /** Set --app-height CSS variable from visual viewport.
+   *  On iPad Safari with tabs, 100vh extends behind the tab bar.
+   *  visualViewport.height reflects the actual visible area. */
+  updateAppHeight() {
+    const vh = window.visualViewport?.height || window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', `${vh}px`);
+  },
+
   /** Initialize mobile detection and set up resize listener */
   init() {
     this.updateBodyClass();
+    this.updateAppHeight();
+
+    // Update --app-height on viewport resize (orientation, tab bar toggle)
+    if (window.visualViewport) {
+      this._appHeightHandler = () => this.updateAppHeight();
+      window.visualViewport.addEventListener('resize', this._appHeightHandler);
+    }
+
     // Debounced resize handler
     let resizeTimeout;
     this._resizeHandler = () => {
       clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(() => this.updateBodyClass(), 100);
+      resizeTimeout = setTimeout(() => {
+        this.updateBodyClass();
+        this.updateAppHeight();
+      }, 100);
     };
     window.addEventListener('resize', this._resizeHandler);
 

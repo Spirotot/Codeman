@@ -23,13 +23,13 @@
  * Contains raw terminal output with ANSI escape sequences.
  * Reduced from 5MB to 2MB for better render performance.
  */
-export const MAX_TERMINAL_BUFFER_SIZE = 2 * 1024 * 1024; // 2MB
+export const MAX_TERMINAL_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB
 
 /**
  * Size to trim terminal buffer to when max is exceeded.
  * Keeps the most recent portion to preserve context.
  */
-export const TRIM_TERMINAL_TO = 1.5 * 1024 * 1024; // 1.5MB
+export const TRIM_TERMINAL_TO = 3 * 1024 * 1024; // 3MB
 
 // ============================================================================
 // Text Output Buffer Limits
