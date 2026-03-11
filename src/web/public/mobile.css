@@ -1903,6 +1903,14 @@ html.mobile-init .file-browser-panel {
   overscroll-behavior: none;
 }
 
+/* iPad Safari with tabs: position: fixed uses the layout viewport which extends
+   behind the browser chrome (tab bar). Calculate the offset between the layout
+   viewport (innerHeight) and the visual viewport (--app-height) to push the
+   toolbar into the visible area. --app-height is set by MobileDetection.updateAppHeight(). */
+.ios-device.safari-browser .toolbar {
+  bottom: calc(var(--safe-area-bottom) + (100vh - var(--app-height, 100vh)));
+}
+
 .ios-device.safari-browser .terminal-container {
   /* Keep momentum scrolling but prevent page bounce */
   -webkit-overflow-scrolling: touch;
