@@ -49,7 +49,9 @@ import { MAX_INPUT_LENGTH, MAX_SESSION_NAME_LENGTH } from '../../config/terminal
 const CLAUDE_BANNER_PATTERN = /\x1b\[1mClaud/;
 // eslint-disable-next-line no-control-regex
 const CTRL_L_PATTERN = /\x0c/g;
-const LEADING_WHITESPACE_PATTERN = /^[\s\r\n]+/;
+// Strip leading ANSI escapes + whitespace (tmux captures include cursor movement, clear, etc.)
+// eslint-disable-next-line no-control-regex
+const LEADING_WHITESPACE_PATTERN = /^(\x1b\[\??[\d;]*[A-Za-z]|[\s\r\n])+/;
 
 export function registerSessionRoutes(
   app: FastifyInstance,
