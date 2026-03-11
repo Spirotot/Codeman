@@ -1850,12 +1850,21 @@ class CodemanApp {
     // so reload the buffer to recover from any display corruption.
     if (!this.activeSessionId || !this.terminal) return;
     try {
-      const res = await fetch(`/api/sessions/${this.activeSessionId}/terminal?tail=${TERMINAL_TAIL_SIZE}`);
+      const res = await fetch(`/api/sessions/${this.activeSessionId}/terminal?source=tmux`);
       const data = await res.json();
       if (data.terminalBuffer) {
         this.terminal.clear();
         this.terminal.reset();
+        // Replay at tmux pane width, then resize back (see selectSession)
+        const clientCols = this.terminal.cols;
+        const clientRows = this.terminal.rows;
+        if (data.source === 'tmux' && data.paneCols && data.paneCols !== clientCols) {
+          this.terminal.resize(data.paneCols, clientRows);
+        }
         await this.chunkedTerminalWrite(data.terminalBuffer);
+        if (data.source === 'tmux' && data.paneCols && data.paneCols !== clientCols) {
+          this.terminal.resize(clientCols, clientRows);
+        }
         this.terminal.scrollToBottom();
         // Re-position local echo overlay at new prompt location
         this._localEchoOverlay?.rerender();
@@ -1874,17 +1883,22 @@ class CodemanApp {
     if (data.id === this.activeSessionId) {
       // Fetch buffer, clear terminal, write buffer, resize (no Ctrl+L needed)
       try {
-        const res = await fetch(`/api/sessions/${data.id}/terminal`);
+        const res = await fetch(`/api/sessions/${data.id}/terminal?source=tmux`);
         const termData = await res.json();
 
         this.terminal.clear();
         this.terminal.reset();
         if (termData.terminalBuffer) {
-          // Strip any DEC 2026 markers and write raw content
-          // (markers don't help here - this is a static buffer reload, not live Ink redraws)
-          const cleanBuffer = termData.terminalBuffer.replace(DEC_SYNC_STRIP_RE, '');
-          // Use chunked write to avoid UI freeze with large buffers (can be 1-2MB)
-          await this.chunkedTerminalWrite(cleanBuffer);
+          // Replay at tmux pane width, then resize back (see selectSession)
+          const clientCols = this.terminal.cols;
+          const clientRows = this.terminal.rows;
+          if (termData.source === 'tmux' && termData.paneCols && termData.paneCols !== clientCols) {
+            this.terminal.resize(termData.paneCols, clientRows);
+          }
+          await this.chunkedTerminalWrite(termData.terminalBuffer);
+          if (termData.source === 'tmux' && termData.paneCols && termData.paneCols !== clientCols) {
+            this.terminal.resize(clientCols, clientRows);
+          }
         }
 
         // Fire-and-forget resize — don't block on it
@@ -3683,11 +3697,14 @@ class CodemanApp {
         _crashDiag.log('CACHE_DONE');
       }
 
+      // Fetch from tmux scrollback — this produces proper scrollback history
+      // because tmux preserves content that Ink's cursor-home/erase overwrites.
+      // Falls back to raw PTY buffer if tmux capture fails.
       _crashDiag.log('FETCH_START');
-      const res = await fetch(`/api/sessions/${sessionId}/terminal?tail=${TERMINAL_TAIL_SIZE}`);
+      const res = await fetch(`/api/sessions/${sessionId}/terminal?source=tmux`);
       if (selectGen !== this._selectGeneration) { if (this._isLoadingBuffer) this._finishBufferLoad(); this._restoringFlushedState = false; return; }
       const data = await res.json();
-      _crashDiag.log(`FETCH_DONE: ${data.terminalBuffer ? (data.terminalBuffer.length/1024).toFixed(0) + 'KB' : 'empty'} truncated=${data.truncated}`);
+      _crashDiag.log(`FETCH_DONE: ${data.terminalBuffer ? (data.terminalBuffer.length/1024).toFixed(0) + 'KB' : 'empty'} source=${data.source} truncated=${data.truncated}`);
 
       if (data.terminalBuffer) {
         // Skip rewrite if fresh buffer matches cache — avoids visible clear+rewrite flash.
@@ -3695,16 +3712,32 @@ class CodemanApp {
         // very visible, causing the terminal to flash blank then repaint.
         const needsRewrite = data.terminalBuffer !== cachedBuffer;
         if (needsRewrite) {
-          _crashDiag.log(`REWRITE: ${(data.terminalBuffer.length/1024).toFixed(0)}KB`);
+          _crashDiag.log(`REWRITE: ${(data.terminalBuffer.length/1024).toFixed(0)}KB source=${data.source}`);
           this.terminal.clear();
           this.terminal.reset();
           // Show truncation indicator if buffer was cut
           if (data.truncated) {
             this.terminal.write('\x1b[90m... (earlier output truncated for performance) ...\x1b[0m\r\n\r\n');
           }
+
+          // Tmux capture is rendered at the tmux pane's column width.
+          // Replay at that width so line breaks are correct, then resize
+          // back to the client width — xterm.js reflows the content.
+          const clientCols = this.terminal.cols;
+          const clientRows = this.terminal.rows;
+          if (data.source === 'tmux' && data.paneCols && data.paneCols !== clientCols) {
+            this.terminal.resize(data.paneCols, clientRows);
+          }
+
           // Use chunked write for large buffers to avoid UI jank
           await this.chunkedTerminalWrite(data.terminalBuffer);
           if (selectGen !== this._selectGeneration) { if (this._isLoadingBuffer) this._finishBufferLoad(); this._restoringFlushedState = false; return; }
+
+          // Resize back to client width (xterm.js reflows content)
+          if (data.source === 'tmux' && data.paneCols && data.paneCols !== clientCols) {
+            this.terminal.resize(clientCols, clientRows);
+          }
+
           // Ensure terminal is scrolled to bottom after buffer load
           this.terminal.scrollToBottom();
         }

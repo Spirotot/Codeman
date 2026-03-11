@@ -2171,6 +2171,26 @@ export class Session extends EventEmitter {
     return this._terminalBuffer.value;
   }
 
+  /**
+   * Capture the tmux scrollback for this session's pane.
+   * Returns rendered content with ANSI colors (no Ink cursor-home/erase
+   * sequences), which produces proper scrollback when replayed in xterm.js.
+   * Also returns the pane dimensions so the client can replay at the correct width.
+   * Returns null if the session doesn't use tmux or capture fails.
+   */
+  captureTmuxScrollback(): { content: string; cols: number; rows: number } | null {
+    if (!this._mux || !this._muxSession) return null;
+    try {
+      const panes = this._mux.listPanes(this._muxSession.muxName);
+      if (panes.length === 0) return null;
+      const content = this._mux.capturePaneBuffer(this._muxSession.muxName, panes[0].paneId);
+      if (!content) return null;
+      return { content, cols: panes[0].width, rows: panes[0].height };
+    } catch {
+      return null;
+    }
+  }
+
   clearBuffers(): void {
     this._terminalBuffer.clear();
     this._textOutput.clear();
