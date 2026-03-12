@@ -37,6 +37,8 @@ const ConversationView = (() => {
   let typingIndicator = null;
   /** @type {boolean} Whether the session is currently working (for stop button visibility) */
   let sessionBusy = false;
+  /** @type {Map<string, string>} Draft input text per session — preserved across tab switches */
+  const draftTextMap = new Map();
 
   const PAGE_SIZE = 80;
 
@@ -455,6 +457,20 @@ const ConversationView = (() => {
     }
   }
 
+  /** Scroll the messages container to the bottom (newest messages visible).
+   *  Uses rAF to ensure browser layout has settled after DOM mutations —
+   *  critical on mobile Safari where synchronous scrollTop after bulk
+   *  insertion is unreliable. */
+  function scrollToBottom() {
+    if (!messagesContainer) return;
+    // Immediate attempt (works on most desktop browsers)
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    // Deferred attempt after layout pass (needed on mobile Safari)
+    requestAnimationFrame(() => {
+      if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    });
+  }
+
   function renderAll(msgs) {
     if (!messagesContainer) return;
     messagesContainer.innerHTML = '';
@@ -477,17 +493,21 @@ const ConversationView = (() => {
       }
     }
 
-    // Scroll to bottom (newest)
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    // Scroll to bottom (newest) — use rAF to ensure layout has settled
+    // after bulk DOM insertion (especially important on mobile Safari).
+    scrollToBottom();
 
     // Auto-expand subagent conversations
     autoExpandSubagents();
   }
 
-  /** Auto-expand subagent conversations that haven't been loaded yet */
+  /** Auto-expand subagent conversations that haven't been loaded yet.
+   *  After all subagent threads load, scroll to bottom so newest messages
+   *  remain visible (subagent content adds height after initial scroll). */
   function autoExpandSubagents() {
     if (!messagesContainer) return;
     const btns = messagesContainer.querySelectorAll('.cv-subagent-btn');
+    const loadPromises = [];
     btns.forEach((btn) => {
       // Only auto-load if no thread has been loaded yet
       const parent = btn.closest('.cv-agent-result');
@@ -495,10 +515,19 @@ const ConversationView = (() => {
         const agentId = btn.dataset.agentId;
         if (agentId) {
           // Use a short delay to avoid blocking the initial render
-          setTimeout(() => ConversationView.loadSubagent(agentId, btn), 50);
+          const p = new Promise((resolve) => {
+            setTimeout(() => {
+              ConversationView.loadSubagent(agentId, btn).then(resolve, resolve);
+            }, 50);
+          });
+          loadPromises.push(p);
         }
       }
     });
+    // After all subagent threads load, re-scroll to bottom
+    if (loadPromises.length > 0) {
+      Promise.all(loadPromises).then(() => scrollToBottom());
+    }
   }
 
   function updateHeader() {
@@ -853,6 +882,27 @@ const ConversationView = (() => {
     }
   }
 
+  /** Save current input text into the draft map for the given session */
+  function saveDraft(sessionId) {
+    if (!sessionId || !panel) return;
+    const input = panel.querySelector('#cvInput');
+    if (input) draftTextMap.set(sessionId, input.value);
+  }
+
+  /** Restore draft text for a session (or clear if none saved) and sync textarea height + send button */
+  function restoreDraft(sessionId) {
+    if (!panel) return;
+    const input = panel.querySelector('#cvInput');
+    const sendBtn = panel.querySelector('#cvSendBtn');
+    if (!input) return;
+    const draft = (sessionId && draftTextMap.get(sessionId)) || '';
+    input.value = draft;
+    input.style.height = 'auto';
+    if (draft) input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    if (sendBtn) sendBtn.disabled = !draft.trim();
+    input.classList.toggle('cv-input-multiline', draft.includes('\n'));
+  }
+
   // ─── Public API ─────────────────────────────────────────────
 
   return {
@@ -861,6 +911,12 @@ const ConversationView = (() => {
       if (!sessionId) return;
 
       ensurePanel();
+
+      // Save draft text for the outgoing session before switching
+      if (currentSessionId && currentSessionId !== sessionId) {
+        saveDraft(currentSessionId);
+      }
+
       currentSessionId = sessionId;
       oldestIndex = null;
       newestIndex = 0;
@@ -887,10 +943,17 @@ const ConversationView = (() => {
 
       loadMessages(sessionId, false);
       startAutoRefresh();
+
+      // Restore any saved draft text for the incoming session
+      restoreDraft(sessionId);
     },
 
     close() {
       if (!panel) return;
+
+      // Preserve draft text so it survives close → reopen
+      saveDraft(currentSessionId);
+
       isOpen = false;
       stopAutoRefresh();
       hideTypingIndicator();
@@ -991,6 +1054,7 @@ const ConversationView = (() => {
           }
           input.value = '';
           input.style.height = 'auto';
+          draftTextMap.delete(currentSessionId);
         } else {
           console.error('[ConversationView] Send failed:', res.status);
         }
