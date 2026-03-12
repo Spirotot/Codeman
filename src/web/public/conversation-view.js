@@ -722,25 +722,49 @@ const ConversationView = (() => {
     }
 
     // Adjust panel when iOS keyboard opens/closes so the input bar stays visible.
-    // With interactive-widget=overlays-content + 100dvh, the panel auto-resizes
-    // on modern iOS. The visualViewport listener is a fallback for older iOS and
-    // ensures the keyboard-accessory-bar stays hidden while the CV is open.
+    // On iOS Safari, the virtual keyboard overlays content without changing dvh
+    // or layout viewport height. We detect the keyboard via visualViewport.height
+    // and switch the panel to position:fixed so it fills exactly the visible area.
     if (window.visualViewport) {
+      let baseVVHeight = window.visualViewport.height;
+
       const adjustForKeyboard = () => {
         if (!isOpen || !panel) return;
-        const vvh = window.visualViewport.height;
-        const vvTop = window.visualViewport.offsetTop;
-        // Fallback: if dvh isn't working, set explicit height
-        panel.style.height = vvh + 'px';
-        panel.style.top = vvTop + 'px';
+        const vv = window.visualViewport;
+        const keyboardOpen = vv.height < baseVVHeight - 100;
+
+        if (keyboardOpen) {
+          // Switch to fixed positioning — visualViewport coordinates are relative
+          // to the initial containing block (same as position:fixed), so the math
+          // is directly correct. This covers the tab bar, but it's unreachable
+          // while typing anyway.
+          panel.style.position = 'fixed';
+          panel.style.top = vv.offsetTop + 'px';
+          panel.style.height = vv.height + 'px';
+          panel.style.left = '0';
+          panel.style.right = '0';
+          panel.style.bottom = 'auto';
+        } else {
+          // Keyboard closed — revert to absolute positioning within .main
+          panel.style.position = '';
+          panel.style.top = '';
+          panel.style.height = '';
+          panel.style.left = '';
+          panel.style.right = '';
+          panel.style.bottom = '';
+          baseVVHeight = vv.height; // Update for orientation changes
+        }
+
         // Hide keyboard accessory bar when conversation view is open —
         // it's designed for the terminal input, not the conversation input
         const accessory = document.querySelector('.keyboard-accessory-bar');
         if (accessory) accessory.style.display = 'none';
-        // Scroll input into view if keyboard obscures it
-        const input = panel.querySelector('#cvInput');
-        if (input && document.activeElement === input) {
-          requestAnimationFrame(() => input.scrollIntoView({ block: 'nearest' }));
+
+        // Ensure messages scroll so input stays visible
+        if (keyboardOpen && messagesContainer) {
+          requestAnimationFrame(() => {
+            if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          });
         }
       };
       window.visualViewport.addEventListener('resize', adjustForKeyboard);
@@ -799,8 +823,11 @@ const ConversationView = (() => {
       if (toolbar) toolbar.style.display = '';
       if (accessory) accessory.style.display = '';
       // Reset panel inline styles set by keyboard handler
+      panel.style.position = '';
       panel.style.top = '';
       panel.style.bottom = '';
+      panel.style.left = '';
+      panel.style.right = '';
       panel.style.height = '';
 
       if (typeof app !== 'undefined') {
