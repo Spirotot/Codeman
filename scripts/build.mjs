@@ -60,6 +60,7 @@ appendFileSync(
 
 // 4. Minify frontend assets
 run('minify app.js', 'npx esbuild dist/web/public/app.js --minify --outfile=dist/web/public/app.js --allow-overwrite');
+run('minify conversation-view.js', 'npx esbuild dist/web/public/conversation-view.js --minify --outfile=dist/web/public/conversation-view.js --allow-overwrite');
 run('minify styles.css', 'npx esbuild dist/web/public/styles.css --minify --outfile=dist/web/public/styles.css --allow-overwrite');
 run('minify mobile.css', 'npx esbuild dist/web/public/mobile.css --minify --outfile=dist/web/public/mobile.css --allow-overwrite');
 
@@ -76,6 +77,7 @@ console.log('\n[build] content-hash cache busting');
     'notification-manager.js',
     'keyboard-accessory.js',
     'app.js',
+    'conversation-view.js',
     'ralph-wizard.js',
     'api-client.js',
     'subagent-windows.js',

@@ -6,8 +6,9 @@
 
 import { FastifyInstance } from 'fastify';
 import { join, dirname } from 'node:path';
-import { existsSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, mkdirSync, writeFileSync, createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import {
   ApiErrorCode,
   createErrorResponse,
@@ -917,6 +918,211 @@ export function registerSessionRoutes(
       await ctx.cleanupSession(session.id, true, 'quick_start_error');
       return createErrorResponse(ApiErrorCode.OPERATION_FAILED, getErrorMessage(err));
     }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // Conversation — parsed JSONL transcript for conversation view
+  // ═══════════════════════════════════════════════════════════════
+
+  const TOOL_RESULT_TRUNCATE = 2000;
+
+  interface ConversationMessage {
+    index: number;
+    type: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'thinking';
+    timestamp?: string;
+    content?: string;
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+    toolUseId?: string;
+    isError?: boolean;
+    agentDescription?: string;
+    agentId?: string;
+  }
+
+  /**
+   * Parse a Claude JSONL transcript file and return conversation messages.
+   * Returns newest-first with pagination via `before` cursor (message index).
+   */
+  async function parseConversationJsonl(
+    filePath: string,
+    limit: number,
+    before?: number
+  ): Promise<{ messages: ConversationMessage[]; total: number; hasMore: boolean }> {
+    // Read all lines to get the full picture
+    const allMessages: ConversationMessage[] = [];
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      return { messages: [], total: 0, hasMore: false };
+    }
+
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
+
+    let lineIndex = 0;
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        const extracted = extractConversationMessages(entry, lineIndex);
+        allMessages.push(...extracted);
+        lineIndex++;
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    // Assign sequential indices
+    for (let i = 0; i < allMessages.length; i++) {
+      allMessages[i].index = i;
+    }
+
+    const total = allMessages.length;
+
+    // Newest-first ordering
+    const reversed = [...allMessages].reverse();
+
+    // Apply cursor
+    let filtered = reversed;
+    if (before !== undefined) {
+      filtered = reversed.filter((m) => m.index < before);
+    }
+
+    const page = filtered.slice(0, limit);
+    const hasMore = filtered.length > limit;
+
+    return { messages: page, total, hasMore };
+  }
+
+  /** Extract conversation messages from a single JSONL entry */
+  function extractConversationMessages(entry: Record<string, unknown>, _lineIndex: number): ConversationMessage[] {
+    const results: ConversationMessage[] = [];
+    const type = entry.type as string;
+    const timestamp = (entry.timestamp as string) || undefined;
+
+    if (type === 'user') {
+      const message = entry.message as { content?: unknown; role?: string } | undefined;
+      if (message?.content) {
+        if (typeof message.content === 'string') {
+          results.push({ index: 0, type: 'user', content: message.content, timestamp });
+        } else if (Array.isArray(message.content)) {
+          const textParts = (message.content as Array<{ type: string; text?: string }>)
+            .filter((b) => b.type === 'text' && b.text)
+            .map((b) => b.text)
+            .join('\n');
+          if (textParts) {
+            results.push({ index: 0, type: 'user', content: textParts, timestamp });
+          }
+        }
+      }
+    } else if (type === 'assistant') {
+      const message = entry.message as { content?: unknown } | undefined;
+      if (Array.isArray(message?.content)) {
+        for (const block of message!.content as Array<Record<string, unknown>>) {
+          if (block.type === 'text' && block.text) {
+            results.push({ index: 0, type: 'assistant', content: block.text as string, timestamp });
+          } else if (block.type === 'thinking' && block.thinking) {
+            results.push({ index: 0, type: 'thinking', content: block.thinking as string, timestamp });
+          } else if (block.type === 'tool_use') {
+            const toolMsg: ConversationMessage = {
+              index: 0,
+              type: 'tool_use',
+              toolName: block.name as string,
+              toolUseId: block.id as string,
+              timestamp,
+            };
+            // Include tool input, truncating large values
+            if (block.input) {
+              try {
+                const inputStr = JSON.stringify(block.input);
+                toolMsg.toolInput =
+                  inputStr.length > TOOL_RESULT_TRUNCATE
+                    ? ({ _truncated: inputStr.slice(0, TOOL_RESULT_TRUNCATE) + '…' } as Record<string, unknown>)
+                    : (block.input as Record<string, unknown>);
+              } catch {
+                toolMsg.toolInput = { _error: 'Could not serialize input' };
+              }
+            }
+            // Check for subagent (Task tool) via agent description
+            if (block.name === 'Task' && typeof (block.input as Record<string, unknown>)?.description === 'string') {
+              toolMsg.agentDescription = (block.input as Record<string, unknown>).description as string;
+            }
+            results.push(toolMsg);
+          }
+        }
+      }
+    } else if (type === 'tool_result') {
+      const toolUseId = entry.tool_use_id as string | undefined;
+      const isError = entry.is_error === true;
+      let content = '';
+      if (typeof entry.content === 'string') {
+        content = entry.content;
+      } else if (Array.isArray(entry.content)) {
+        content = (entry.content as Array<{ type: string; text?: string }>)
+          .filter((b) => b.type === 'text' && b.text)
+          .map((b) => b.text)
+          .join('\n');
+      }
+      if (content.length > TOOL_RESULT_TRUNCATE) {
+        content = content.slice(0, TOOL_RESULT_TRUNCATE) + '… [truncated]';
+      }
+      results.push({ index: 0, type: 'tool_result', content, toolUseId, isError, timestamp });
+    }
+
+    return results;
+  }
+
+  app.get('/api/sessions/:id/conversation', async (req) => {
+    const { id } = req.params as { id: string };
+    const query = req.query as Record<string, string>;
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const before = query.before ? parseInt(query.before, 10) : undefined;
+    const subagentId = query.subagent || undefined;
+
+    const session = ctx.sessions.get(id);
+    // Use claudeSessionId for JSONL lookup — resumed sessions write to original ID
+    const effectiveSessionId = session?.claudeSessionId || id;
+
+    // Find the JSONL file across all project directories
+    const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
+    let jsonlPath: string | null = null;
+
+    try {
+      const projectDirs = await fs.readdir(projectsDir);
+      for (const projDir of projectDirs) {
+        const candidate = join(projectsDir, projDir, `${effectiveSessionId}.jsonl`);
+        try {
+          await fs.access(candidate);
+          jsonlPath = candidate;
+          break;
+        } catch {
+          // Try next project dir
+        }
+      }
+    } catch {
+      // Projects dir may not exist
+    }
+
+    // Also check for subagent JSONL if requested
+    if (subagentId && jsonlPath) {
+      const parentDir = dirname(jsonlPath);
+      const subagentPath = join(parentDir, `${subagentId}.jsonl`);
+      try {
+        await fs.access(subagentPath);
+        jsonlPath = subagentPath;
+      } catch {
+        return { messages: [], total: 0, hasMore: false };
+      }
+    }
+
+    if (!jsonlPath) {
+      return { messages: [], total: 0, hasMore: false };
+    }
+
+    return parseConversationJsonl(jsonlPath, limit, before);
   });
 
   // ═══════════════════════════════════════════════════════════════

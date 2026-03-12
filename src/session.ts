@@ -1618,9 +1618,11 @@ export class Session extends EventEmitter {
 
           // Extract Claude session ID from messages (can be in any message type)
           // Support both sessionId (camelCase) and session_id (snake_case)
+          // Always update when the ID changes — covers `/resume` inside Claude
+          // which switches the active conversation to a different session ID.
           const msgSessionId =
             ((msg as unknown as Record<string, unknown>).sessionId as string | undefined) ?? msg.session_id;
-          if (msgSessionId && !this._claudeSessionId) {
+          if (msgSessionId && msgSessionId !== this._claudeSessionId) {
             this._claudeSessionId = msgSessionId;
           }
 

@@ -400,6 +400,12 @@
       </div>
 
       <div class="toolbar-center">
+        <button class="btn-toolbar btn-sm btn-conversation" id="conversationToggleBtn" onclick="app.toggleConversationView()"
+                title="Conversation view" aria-label="Toggle conversation view" style="display: none;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
         <button class="btn-toolbar btn-sm btn-voice" id="voiceInputBtn" onclick="VoiceInput.toggle()"
                 title="Voice input (Ctrl+Shift+V)" aria-label="Start voice input" aria-pressed="false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -924,6 +930,13 @@
                 <span class="settings-item-label">Subagents</span>
                 <label class="switch switch-sm">
                   <input type="checkbox" id="appSettingsShowSubagents">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="settings-item" title="Auto-open conversation view in portrait orientation on touch devices">
+                <span class="settings-item-label">Auto Conversation View</span>
+                <label class="switch switch-sm">
+                  <input type="checkbox" id="appSettingsAutoCV" checked>
                   <span class="slider"></span>
                 </label>
               </div>
@@ -1690,6 +1703,7 @@
   <script defer src="notification-manager.js"></script>
   <script defer src="keyboard-accessory.js"></script>
   <script defer src="app.js"></script>
+  <script defer src="conversation-view.js"></script>
   <script defer src="ralph-wizard.js"></script>
   <script defer src="api-client.js"></script>
   <script defer src="subagent-windows.js"></script>

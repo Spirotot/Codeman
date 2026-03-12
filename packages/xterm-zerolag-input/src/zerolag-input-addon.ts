@@ -64,6 +64,7 @@ export class ZerolagInputAddon implements XtermAddon {
 
   // Text state
   private _pendingText = '';
+  private _cursorPos = 0; // index into _pendingText (0 = before first char)
   private _flushedOffset = 0;
   private _flushedText = '';
   private _bufferDetectDone = false;
@@ -177,7 +178,12 @@ export class ZerolagInputAddon implements XtermAddon {
    */
   addChar(char: string): void {
     if (!this._pendingText && !this._flushedOffset) this._detectBufferText();
-    this._pendingText += char;
+    if (this._cursorPos >= this._pendingText.length) {
+      this._pendingText += char;
+    } else {
+      this._pendingText = this._pendingText.slice(0, this._cursorPos) + char + this._pendingText.slice(this._cursorPos);
+    }
+    this._cursorPos++;
     this._render();
   }
 
@@ -187,7 +193,12 @@ export class ZerolagInputAddon implements XtermAddon {
   appendText(text: string): void {
     if (!text) return;
     if (!this._pendingText && !this._flushedOffset) this._detectBufferText();
-    this._pendingText += text;
+    if (this._cursorPos >= this._pendingText.length) {
+      this._pendingText += text;
+    } else {
+      this._pendingText = this._pendingText.slice(0, this._cursorPos) + text + this._pendingText.slice(this._cursorPos);
+    }
+    this._cursorPos += text.length;
     this._render();
   }
 
@@ -208,14 +219,22 @@ export class ZerolagInputAddon implements XtermAddon {
    * - `false`: Nothing to remove. The consumer should NOT send backspace.
    */
   removeChar(): 'pending' | 'flushed' | false {
-    if (this._pendingText.length > 0) {
-      this._pendingText = this._pendingText.slice(0, -1);
+    if (this._cursorPos > 0 && this._pendingText.length > 0) {
+      this._pendingText = this._pendingText.slice(0, this._cursorPos - 1) + this._pendingText.slice(this._cursorPos);
+      this._cursorPos--;
       if (this._pendingText.length > 0 || this._flushedOffset > 0) {
         this._render();
       } else {
         this._hide();
       }
       return 'pending';
+    }
+    // Cursor at start of pending text — check if pending is empty (fall through to flushed)
+    if (this._pendingText.length > 0 && this._cursorPos === 0) {
+      // Cursor is at start of pending text — nothing before cursor to delete.
+      // Check flushed text below.
+    } else if (this._pendingText.length === 0) {
+      // No pending text — fall through to flushed
     }
 
     if (this._flushedOffset > 0) {
@@ -247,11 +266,81 @@ export class ZerolagInputAddon implements XtermAddon {
   }
 
   /**
+   * Move the cursor one character to the left within pending text.
+   * @returns `true` if cursor moved, `false` if already at start.
+   */
+  moveCursorLeft(): boolean {
+    if (this._cursorPos > 0) {
+      this._cursorPos--;
+      this._render();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Move the cursor one character to the right within pending text.
+   * @returns `true` if cursor moved, `false` if already at end.
+   */
+  moveCursorRight(): boolean {
+    if (this._cursorPos < this._pendingText.length) {
+      this._cursorPos++;
+      this._render();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Move the cursor to the start of pending text.
+   * @returns `true` if cursor moved.
+   */
+  moveCursorHome(): boolean {
+    if (this._cursorPos > 0) {
+      this._cursorPos = 0;
+      this._render();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Move the cursor to the end of pending text.
+   * @returns `true` if cursor moved.
+   */
+  moveCursorEnd(): boolean {
+    if (this._cursorPos < this._pendingText.length) {
+      this._cursorPos = this._pendingText.length;
+      this._render();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Delete the character under/after the cursor (like the Delete key).
+   * @returns `true` if a character was deleted.
+   */
+  deleteCharForward(): boolean {
+    if (this._cursorPos < this._pendingText.length) {
+      this._pendingText = this._pendingText.slice(0, this._cursorPos) + this._pendingText.slice(this._cursorPos + 1);
+      if (this._pendingText.length > 0 || this._flushedOffset > 0) {
+        this._render();
+      } else {
+        this._hide();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Clear all overlay state (pending + flushed). Hides the overlay.
    * Call on Enter, Ctrl+C, or any action that submits/cancels input.
    */
   clear(): void {
     this._pendingText = '';
+    this._cursorPos = 0;
     this._flushedOffset = 0;
     this._flushedText = '';
     this._bufferDetectDone = false;
@@ -425,6 +514,11 @@ export class ZerolagInputAddon implements XtermAddon {
     return this._pendingText;
   }
 
+  /** Cursor position within pendingText (0 = before first char). */
+  get cursorPos(): number {
+    return this._cursorPos;
+  }
+
   /** Whether there is any overlay content (pending or flushed). */
   get hasPending(): boolean {
     return this._pendingText.length > 0 || this._flushedOffset > 0;
@@ -434,6 +528,7 @@ export class ZerolagInputAddon implements XtermAddon {
   get state(): ZerolagInputState {
     return {
       pendingText: this._pendingText,
+      cursorPos: this._cursorPos,
       flushedLength: this._flushedOffset,
       flushedText: this._flushedText,
       visible: this._overlay !== null && this._overlay.style.display !== 'none',
@@ -565,7 +660,10 @@ export class ZerolagInputAddon implements XtermAddon {
 
       // Skip redundant re-renders — include text content to detect
       // same-length changes (e.g., setFlushed with different text)
-      const renderKey = `${displayText}:${startCol}:${activePrompt.row}:${activePrompt.col}:${totalCols}:${this._flushedOffset}`;
+      // Cursor position in display text = flushed chars + cursorPos within pending
+      const cursorCharIndex = this._flushedOffset + this._cursorPos;
+
+      const renderKey = `${displayText}:${startCol}:${activePrompt.row}:${activePrompt.col}:${totalCols}:${this._flushedOffset}:${cursorCharIndex}`;
       if (renderKey === this._lastRenderKey && this._overlay.style.display !== 'none') return;
       this._lastRenderKey = renderKey;
 
@@ -615,6 +713,7 @@ export class ZerolagInputAddon implements XtermAddon {
         font: this._font,
         showCursor: this._options.showCursor,
         cursorColor,
+        cursorCharIndex,
         terminal: this._terminal,
       });
     } catch {

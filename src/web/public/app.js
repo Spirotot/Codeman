@@ -663,13 +663,15 @@ class CodemanApp {
     // Register link provider for clickable file paths in Bash tool output
     this.registerFilePathLinkProvider();
 
-    // Always use mouse wheel for terminal scrollback, never forward to application.
-    // Prevents Claude's Ink UI (plan mode selector) from capturing scroll as option navigation.
-    container.addEventListener('wheel', (ev) => {
-      ev.preventDefault();
+    // Prevent xterm.js from converting wheel events to up/down arrow keys
+    // when the alternate screen buffer is active (Claude CLI / Ink).
+    // Return false from the handler to cancel xterm's default wheel processing,
+    // then scroll the terminal ourselves via scrollLines().
+    this.terminal.attachCustomWheelEventHandler((ev) => {
       const lines = Math.round(ev.deltaY / 25) || (ev.deltaY > 0 ? 1 : -1);
       this.terminal.scrollLines(lines);
-    }, { passive: false });
+      return false;
+    });
 
     // Touch scrolling - only use custom JS scrolling on desktop
     // Mobile uses native browser scrolling via CSS touch-action: pan-y
@@ -802,7 +804,8 @@ class CodemanApp {
         // causes Ink to re-render at the new row count, garbling terminal output.
         // Local fit() still runs so xterm knows the viewport size for scrolling.
         const keyboardUp = typeof KeyboardHandler !== 'undefined' && KeyboardHandler.keyboardVisible;
-        if (this.activeSessionId && !keyboardUp) {
+        const cvOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
+        if (this.activeSessionId && !keyboardUp && !cvOpen) {
           const dims = this.fitAddon.proposeDimensions();
           // Enforce minimum dimensions to prevent layout issues
           const cols = dims ? Math.max(dims.cols, MIN_COLS) : MIN_COLS;
@@ -929,6 +932,17 @@ class CodemanApp {
             // Single-byte ESC (user pressing Escape) still falls through to
             // the control char handler below.
             if (data.length > 1 && data.charCodeAt(0) === 27) {
+              // ── Cursor navigation within overlay ──
+              // Intercept arrow keys, Home/End, Delete when overlay has pending text.
+              // These let the user edit their buffered input before sending.
+              const ov = this._localEchoOverlay;
+              if (ov && ov.pendingText) {
+                if (data === '\x1b[D') { ov.moveCursorLeft(); return; }   // Arrow Left
+                if (data === '\x1b[C') { ov.moveCursorRight(); return; }  // Arrow Right
+                if (data === '\x1b[H' || data === '\x1b[1~') { ov.moveCursorHome(); return; } // Home
+                if (data === '\x1b[F' || data === '\x1b[4~') { ov.moveCursorEnd(); return; }  // End
+                if (data === '\x1b[3~') { ov.deleteCharForward(); return; } // Delete
+              }
               // Multi-byte escape sequence — forward to PTY without clearing
               // overlay/flushed state (terminal response, not user input)
               this._pendingInput += data;
@@ -997,6 +1011,15 @@ class CodemanApp {
                   }
                 });
               }, 300);
+              return;
+            }
+            // Ctrl+A (Home) and Ctrl+E (End) — readline-style cursor movement
+            if (data === '\x01' && this._localEchoOverlay?.pendingText) {
+              this._localEchoOverlay.moveCursorHome();
+              return;
+            }
+            if (data === '\x05' && this._localEchoOverlay?.pendingText) {
+              this._localEchoOverlay.moveCursorEnd();
               return;
             }
             // Control chars (Ctrl+C, single ESC): send buffered text + control char immediately
@@ -3640,6 +3663,10 @@ class CodemanApp {
     this.flickerFilterBuffer = '';
     this.flickerFilterActive = false;
 
+    // Invalidate slash command cache (project commands may differ per session)
+    if (typeof SlashCommands !== 'undefined') SlashCommands.invalidate();
+    if (this._slashDropdown) { this._slashDropdown.style.display = 'none'; this._slashResults = []; }
+
     // Clear tab completion detection flag — don't carry across sessions
     this._tabCompletionSessionId = null;
     this._tabCompletionRetries = 0;
@@ -3935,6 +3962,14 @@ class CodemanApp {
       _crashDiag.log('FOCUS');
       this.terminal.focus();
       this.terminal.scrollToBottom();
+
+      // Auto-open conversation view in portrait mode on touch devices
+      if (!this._forceTerminalView && this._isAutoConversationView() && typeof ConversationView !== 'undefined') {
+        ConversationView.open(sessionId);
+      }
+      this._updateConversationToggleBtn();
+      this._initOrientationAutoSwitch();
+
       _crashDiag.log(`SELECT_DONE: ${(performance.now() - _selStart).toFixed(0)}ms`);
       console.log(`[CRASH-DIAG] selectSession DONE: ${sessionId.slice(0,8)} in ${(performance.now() - _selStart).toFixed(0)}ms`);
     } catch (err) {
@@ -3942,6 +3977,69 @@ class CodemanApp {
       this._restoringFlushedState = false;
       console.error('Failed to load session terminal:', err);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Conversation View integration
+  // ═══════════════════════════════════════════════════════════════
+
+  toggleConversationView() {
+    if (typeof ConversationView === 'undefined') return;
+    if (ConversationView.isOpen()) {
+      ConversationView.close();
+      this._forceTerminalView = true;
+      this.terminal?.focus();
+    } else if (this.activeSessionId) {
+      ConversationView.open(this.activeSessionId);
+      this._forceTerminalView = false;
+    }
+    this._updateConversationToggleBtn();
+  }
+
+  _updateConversationToggleBtn() {
+    const btn = document.getElementById('conversationToggleBtn');
+    if (!btn) return;
+    // Show button when a session is active
+    btn.style.display = this.activeSessionId ? '' : 'none';
+    const isOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
+    btn.classList.toggle('active', isOpen);
+    btn.title = isOpen ? 'Show terminal' : 'Conversation view';
+  }
+
+  _isAutoConversationView() {
+    if (!MobileDetection.isTouchDevice()) return false;
+    const settings = this.loadAppSettingsFromStorage();
+    if (settings.autoConversationView === false) return false;
+    // Check portrait orientation
+    return window.matchMedia('(orientation: portrait)').matches;
+  }
+
+  _initOrientationAutoSwitch() {
+    if (this._orientationListenerAttached) return;
+    this._orientationListenerAttached = true;
+    const mq = window.matchMedia('(orientation: portrait)');
+    mq.addEventListener('change', (e) => {
+      if (typeof ConversationView === 'undefined') return;
+      if (this._forceTerminalView) return;
+      const settings = this.loadAppSettingsFromStorage();
+      if (settings.autoConversationView === false) return;
+      if (!this.activeSessionId) return;
+
+      if (e.matches) {
+        // Portrait — open CV
+        if (!ConversationView.isOpen()) {
+          ConversationView.open(this.activeSessionId);
+          this._updateConversationToggleBtn();
+        }
+      } else {
+        // Landscape — close CV, show terminal
+        if (ConversationView.isOpen()) {
+          ConversationView.close();
+          this._updateConversationToggleBtn();
+          this.terminal?.focus();
+        }
+      }
+    });
   }
 
   // Shared cleanup for all session data — called from both closeSession() and session:deleted handler
@@ -6497,6 +6595,7 @@ class CodemanApp {
     document.getElementById('appSettingsShowSubagents').checked = settings.showSubagents ?? defaults.showSubagents ?? false;
     document.getElementById('appSettingsSubagentTracking').checked = settings.subagentTrackingEnabled ?? defaults.subagentTrackingEnabled ?? true;
     document.getElementById('appSettingsSubagentActiveTabOnly').checked = settings.subagentActiveTabOnly ?? defaults.subagentActiveTabOnly ?? true;
+    document.getElementById('appSettingsAutoCV').checked = settings.autoConversationView ?? true;
     document.getElementById('appSettingsImageWatcherEnabled').checked = settings.imageWatcherEnabled ?? defaults.imageWatcherEnabled ?? false;
     document.getElementById('appSettingsTunnelEnabled').checked = settings.tunnelEnabled ?? false;
     this.loadTunnelStatus();
@@ -7313,6 +7412,7 @@ class CodemanApp {
       showSubagents: document.getElementById('appSettingsShowSubagents').checked,
       subagentTrackingEnabled: document.getElementById('appSettingsSubagentTracking').checked,
       subagentActiveTabOnly: document.getElementById('appSettingsSubagentActiveTabOnly').checked,
+      autoConversationView: document.getElementById('appSettingsAutoCV').checked,
       imageWatcherEnabled: document.getElementById('appSettingsImageWatcherEnabled').checked,
       tunnelEnabled: document.getElementById('appSettingsTunnelEnabled').checked,
       localEchoEnabled: document.getElementById('appSettingsLocalEcho').checked,

@@ -130,6 +130,8 @@ export interface ZerolagInputOptions {
 export interface ZerolagInputState {
   /** Characters typed but not yet acknowledged by the server */
   pendingText: string;
+  /** Cursor position within pendingText (0 = before first char) */
+  cursorPos: number;
   /** Number of characters flushed to PTY but echo not yet received */
   flushedLength: number;
   /** Text content of the flushed portion */
@@ -165,6 +167,8 @@ export interface RenderParams {
   font: FontStyle;
   showCursor: boolean;
   cursorColor: string;
+  /** Cursor position in the display text (character index). -1 = end of text. */
+  cursorCharIndex: number;
   /** Terminal instance for CJK wide character width detection */
   terminal?: XtermTerminal | null;
 }

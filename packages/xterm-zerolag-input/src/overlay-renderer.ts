@@ -87,16 +87,44 @@ export function renderOverlay(container: HTMLDivElement, params: RenderParams): 
     container.appendChild(lineEl);
   }
 
-  // Block cursor at end of last line (use visual width for CJK support)
+  // Block cursor at cursorCharIndex position (or end of text if -1)
   if (showCursor) {
-    const lastLine = lines[lines.length - 1];
-    const lastLineLeft = lines.length === 1 ? startCol : 0;
-    const cursorCol = lastLineLeft + stringCellWidth(terminal, lastLine);
+    const { cursorCharIndex } = params;
+    // Compute total display text to find cursor's visual position
+    const fullText = lines.join('');
+    const targetIdx = cursorCharIndex < 0 || cursorCharIndex >= fullText.length ? fullText.length : cursorCharIndex;
+
+    // Walk through lines to find which line and column the cursor lands on
+    let charsSeen = 0;
+    let cursorLine = 0;
+    let charsInLine = 0;
+    for (let li = 0; li < lines.length; li++) {
+      const lineChars = [...lines[li]];
+      if (charsSeen + lineChars.length >= targetIdx) {
+        cursorLine = li;
+        charsInLine = targetIdx - charsSeen;
+        break;
+      }
+      charsSeen += lineChars.length;
+      if (li === lines.length - 1) {
+        cursorLine = li;
+        charsInLine = lineChars.length;
+      }
+    }
+
+    const lineLeft = cursorLine === 0 ? startCol : 0;
+    // Compute visual column width of chars before cursor on this line
+    const lineText = lines[cursorLine] || '';
+    const charsBeforeCursor = [...lineText].slice(0, charsInLine);
+    let colOffset = 0;
+    for (const ch of charsBeforeCursor) colOffset += charCellWidth(terminal, ch);
+    const cursorCol = lineLeft + colOffset;
+
     if (cursorCol < totalCols) {
       const cursor = document.createElement('span');
       cursor.style.cssText = 'position:absolute;display:inline-block';
       cursor.style.left = cursorCol * cellW + 'px';
-      cursor.style.top = (lines.length - 1) * cellH + 'px';
+      cursor.style.top = cursorLine * cellH + 'px';
       cursor.style.width = cellW + 'px';
       cursor.style.height = cellH + 'px';
       cursor.style.backgroundColor = cursorColor;
