@@ -121,6 +121,7 @@ import {
   BATCH_FLUSH_THRESHOLD,
   STATS_COLLECTION_INTERVAL_MS,
   INACTIVITY_TIMEOUT_MS,
+  JSONL_RECONCILIATION_INTERVAL,
 } from '../config/server-timing.js';
 
 // SSE padding for Cloudflare tunnel buffer flushing.
@@ -2366,6 +2367,120 @@ export class WebServer extends EventEmitter {
     }
   }
 
+  /**
+   * Periodic JSONL reconciliation — verifies each session's claudeSessionId
+   * resolves to an actual JSONL file. If not (e.g., after /resume creates a new
+   * Claude session), scans ~/.claude/projects/ for the newest unclaimed JSONL
+   * matching the session's workingDir and updates the mapping.
+   */
+  private async reconcileClaudeSessionIds(): Promise<void> {
+    const projectsDir = join(homedir(), '.claude', 'projects');
+    try {
+      await fs.access(projectsDir);
+    } catch {
+      return; // No projects dir yet
+    }
+
+    // Build set of all claudeSessionIds that have a valid JSONL file
+    const sessionsToReconcile: Array<{ session: Session; id: string }> = [];
+
+    for (const [id, session] of this.sessions) {
+      if (!session.workingDir) continue;
+      const csid = session.claudeSessionId;
+      if (!csid) continue;
+
+      // Check if current claudeSessionId resolves to a JSONL
+      let found = false;
+      try {
+        const projDirs = await fs.readdir(projectsDir);
+        for (const projDir of projDirs) {
+          const candidate = join(projectsDir, projDir, `${csid}.jsonl`);
+          try {
+            await fs.access(candidate);
+            found = true;
+            break;
+          } catch {
+            // Try next
+          }
+        }
+      } catch {
+        continue;
+      }
+
+      if (!found) {
+        sessionsToReconcile.push({ session, id });
+      }
+    }
+
+    if (sessionsToReconcile.length === 0) return;
+
+    // Build set of claimed IDs (all sessions with valid JSONL)
+    const claimedIds = new Set<string>();
+    for (const [, session] of this.sessions) {
+      if (session.claudeSessionId) claimedIds.add(session.claudeSessionId);
+    }
+
+    // Scan for unclaimed JSONLs
+    let projDirs: string[];
+    try {
+      projDirs = await fs.readdir(projectsDir);
+    } catch {
+      return;
+    }
+
+    for (const { session, id } of sessionsToReconcile) {
+      let bestPath: string | null = null;
+      let bestMtime = 0;
+
+      // Remove this session's own (invalid) ID from claimed set for this scan
+      const excludeIds = new Set(claimedIds);
+      excludeIds.delete(session.claudeSessionId || '');
+      // Also exclude the session's own Codeman ID (default value)
+      excludeIds.delete(id);
+
+      for (const projDir of projDirs) {
+        const dirPath = join(projectsDir, projDir);
+        let files: string[];
+        try {
+          files = await fs.readdir(dirPath);
+        } catch {
+          continue;
+        }
+        for (const file of files) {
+          if (!file.endsWith('.jsonl')) continue;
+          const candidateId = file.replace('.jsonl', '');
+          if (excludeIds.has(candidateId)) continue;
+
+          const candidatePath = join(dirPath, file);
+          try {
+            const cStat = await fs.stat(candidatePath);
+            if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
+            // Verify matching cwd in first 2KB
+            const fd = await fs.open(candidatePath, 'r');
+            const buf = Buffer.alloc(2048);
+            await fd.read(buf, 0, 2048, 0);
+            await fd.close();
+            if (!buf.toString('utf-8').includes(`"cwd":"${session.workingDir}"`)) continue;
+            bestPath = candidatePath;
+            bestMtime = cStat.mtimeMs;
+          } catch {
+            // skip
+          }
+        }
+      }
+
+      if (bestPath) {
+        const newId = bestPath.split('/').pop()?.replace('.jsonl', '') || '';
+        if (newId && newId !== session.claudeSessionId) {
+          session.restoreClaudeSessionId(newId);
+          this.persistSessionState(session);
+          claimedIds.add(newId); // Mark as claimed for subsequent iterations
+          console.log(`JSONL reconciliation: session ${id} → ${newId}`);
+        }
+      }
+    }
+  }
+
   async start(): Promise<void> {
     await this.setupRoutes();
 
@@ -2422,6 +2537,17 @@ export class WebServer extends EventEmitter {
       },
       INACTIVITY_TIMEOUT_MS,
       { description: 'periodic token recording' }
+    );
+
+    // Start JSONL reconciliation (every 30s — detects /resume and /clear session ID changes)
+    this.cleanup.setInterval(
+      () => {
+        this.reconcileClaudeSessionIds().catch(() => {
+          /* best-effort */
+        });
+      },
+      JSONL_RECONCILIATION_INTERVAL,
+      { description: 'JSONL session ID reconciliation' }
     );
 
     // Start subagent watcher for Claude Code background agent visibility (if enabled)

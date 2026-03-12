@@ -86,3 +86,7 @@ export const STALE_DATA_MAX_AGE_MS = 60 * 60 * 1000;
 
 /** Standard 5-minute inactivity timeout for streams and caches (ms) */
 export const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** JSONL reconciliation interval — periodically verify each session's claudeSessionId
+ * resolves to an actual JSONL file, and rescan if it doesn't (e.g., after /resume) (ms) */
+export const JSONL_RECONCILIATION_INTERVAL = 30 * 1000;
