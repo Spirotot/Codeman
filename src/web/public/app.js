@@ -1078,11 +1078,13 @@ class CodemanApp {
           return;
         }
 
-        // Regular chars — flush immediately if typed after a gap (>50ms),
-        // otherwise batch via microtask to coalesce rapid keystrokes (paste).
+        // Regular chars — flush immediately if typed after a gap (>80ms),
+        // otherwise batch with a short timer to coalesce rapid keystrokes.
+        // The 12ms coalesce window groups fast typing into fewer requests,
+        // preventing HTTP/2 reordering that causes out-of-order delivery.
         const now = performance.now();
-        if (now - this._lastKeystrokeTime > 50) {
-          // Single char after a gap — send immediately, no setTimeout latency
+        if (now - this._lastKeystrokeTime > 80) {
+          // Single char after a gap — send immediately, no timer latency
           if (this._inputFlushTimeout) {
             clearTimeout(this._inputFlushTimeout);
             this._inputFlushTimeout = null;
@@ -1090,10 +1092,10 @@ class CodemanApp {
           this._lastKeystrokeTime = now;
           flushInput();
         } else {
-          // Rapid sequence (paste or fast typing) — coalesce via microtask
+          // Rapid sequence (paste or fast typing) — coalesce with short timer
           this._lastKeystrokeTime = now;
           if (!this._inputFlushTimeout) {
-            this._inputFlushTimeout = setTimeout(flushInput, 0);
+            this._inputFlushTimeout = setTimeout(flushInput, 12);
           }
         }
       }
@@ -2886,31 +2888,25 @@ class CodemanApp {
       return;
     }
 
-    // Chain on dispatch only — wait for the previous request to be sent before
-    // dispatching the next one (preserves keystroke ordering), but don't wait
-    // for the server's response. The server handles writeViaMux as
-    // fire-and-forget anyway, so the HTTP response carries no useful data
-    // beyond success/failure for retry purposes.
-    this._inputSendChain = this._inputSendChain.then(() => {
-      const fetchPromise = fetch(`/api/sessions/${sessionId}/input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input }),
-        keepalive: input.length < 65536,
-      });
-
-      // Handle response asynchronously — don't block next keystroke on response
-      fetchPromise.then(resp => {
+    // Chain on server response — wait for the previous request to complete
+    // before sending the next one. This guarantees strict keystroke ordering
+    // at the network level (HTTP/2 multiplexing can reorder concurrent requests).
+    this._inputSendChain = this._inputSendChain.then(async () => {
+      try {
+        const resp = await fetch(`/api/sessions/${sessionId}/input`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input }),
+          keepalive: input.length < 65536,
+        });
         if (!resp.ok) {
           this._enqueueInput(sessionId, input);
         } else {
           this.clearPendingHooks(sessionId);
         }
-      }).catch(() => {
+      } catch {
         this._enqueueInput(sessionId, input);
-      });
-
-      // Return immediately after fetch is dispatched (don't await response)
+      }
     });
   }
 
