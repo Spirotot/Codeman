@@ -1106,6 +1106,66 @@ export function registerSessionRoutes(
       // Projects dir may not exist
     }
 
+    // No-JSONL fallback: when claudeSessionId doesn't match any JSONL file
+    // (e.g., session was just created, or /resume generated a new Claude session ID
+    // that hasn't been detected yet). Scan for the newest unclaimed JSONL matching
+    // the session's workingDir.
+    if (!jsonlPath && session?.workingDir) {
+      try {
+        const claimedByOthers = new Set<string>();
+        for (const [otherId, otherSession] of ctx.sessions) {
+          if (otherId === id) continue;
+          if (otherSession.claudeSessionId) claimedByOthers.add(otherSession.claudeSessionId);
+        }
+
+        const projectDirs = await fs.readdir(projectsDir);
+        let bestPath: string | null = null;
+        let bestMtime = 0;
+
+        for (const projDir of projectDirs) {
+          const dirPath = join(projectsDir, projDir);
+          let files: string[];
+          try {
+            files = await fs.readdir(dirPath);
+          } catch {
+            continue;
+          }
+          for (const file of files) {
+            if (!file.endsWith('.jsonl')) continue;
+            const candidateId = file.replace('.jsonl', '');
+            if (claimedByOthers.has(candidateId)) continue;
+
+            const candidatePath = join(dirPath, file);
+            try {
+              const cStat = await fs.stat(candidatePath);
+              if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
+              // Verify matching cwd in first 2KB of file
+              const fd = await fs.open(candidatePath, 'r');
+              const buf = Buffer.alloc(2048);
+              await fd.read(buf, 0, 2048, 0);
+              await fd.close();
+              if (!buf.toString('utf-8').includes(`"cwd":"${session.workingDir}"`)) continue;
+              bestPath = candidatePath;
+              bestMtime = cStat.mtimeMs;
+            } catch {
+              // skip
+            }
+          }
+        }
+
+        if (bestPath) {
+          const newId = bestPath.split('/').pop()?.replace('.jsonl', '') || '';
+          if (newId) {
+            session.restoreClaudeSessionId(newId);
+            ctx.persistSessionState(session);
+            jsonlPath = bestPath;
+          }
+        }
+      } catch {
+        // scan failed
+      }
+    }
+
     // Staleness fallback: if the JSONL hasn't been modified in 2+ minutes,
     // Claude may have done /clear internally, creating a new session ID.
     // Scan for newer JSONL files that were CREATED after the old one went stale,
