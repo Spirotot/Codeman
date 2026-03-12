@@ -699,10 +699,10 @@ const ConversationView = (() => {
 
         const sid = app.activeSessionId;
         if (app.terminal && app.fitAddon) {
-          // Wait one frame for the browser to reflow after display:none → display:''
-          // before measuring dimensions. Without this, proposeDimensions() may return
-          // stale or zero values because the terminal container hasn't laid out yet.
-          requestAnimationFrame(() => {
+          // Wait for iOS Safari to fully reflow after display:none → display:''
+          // before measuring dimensions. A single rAF isn't enough on iOS — the
+          // layout may not have settled. 100ms timeout is reliable across devices.
+          setTimeout(() => {
             try {
               app.fitAddon.fit();
             } catch {
@@ -724,7 +724,7 @@ const ConversationView = (() => {
               app.activeSessionId = null;
               app.selectSession(sid);
             }
-          });
+          }, 150);
         }
         app._updateConversationToggleBtn();
       }

@@ -1106,6 +1106,71 @@ export function registerSessionRoutes(
       // Projects dir may not exist
     }
 
+    // Staleness fallback: if the JSONL hasn't been modified in 2+ minutes,
+    // Claude may have done /clear internally, creating a new session ID.
+    // Scan for newer JSONL files that were CREATED after the old one went stale,
+    // have matching cwd, and aren't claimed by other Codeman sessions.
+    if (jsonlPath && session) {
+      try {
+        const jsonlStat = await fs.stat(jsonlPath);
+        const staleMs = Date.now() - jsonlStat.mtimeMs;
+        if (staleMs > 120_000) {
+          const projDir = dirname(jsonlPath);
+          const files = await fs.readdir(projDir);
+
+          // Build set of Claude session IDs claimed by OTHER sessions
+          const claimedByOthers = new Set<string>();
+          for (const [otherId, otherSession] of ctx.sessions) {
+            if (otherId === id) continue;
+            if (otherSession.claudeSessionId) claimedByOthers.add(otherSession.claudeSessionId);
+          }
+
+          let bestPath = jsonlPath;
+          let bestMtime = jsonlStat.mtimeMs;
+          const sessionCwd = session.workingDir;
+
+          for (const file of files) {
+            if (!file.endsWith('.jsonl')) continue;
+            const candidateId = file.replace('.jsonl', '');
+            if (candidateId === effectiveSessionId) continue;
+            if (claimedByOthers.has(candidateId)) continue;
+
+            const candidatePath = join(projDir, file);
+            try {
+              const cStat = await fs.stat(candidatePath);
+              // Must be newer than current and have real content
+              if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
+              // Must have been CREATED after old JSONL went stale (not a pre-existing session)
+              if (cStat.birthtimeMs < jsonlStat.mtimeMs - 60_000) continue;
+              // Verify matching cwd
+              if (sessionCwd) {
+                const fd = await fs.open(candidatePath, 'r');
+                const buf = Buffer.alloc(2048);
+                await fd.read(buf, 0, 2048, 0);
+                await fd.close();
+                if (!buf.toString('utf-8').includes(`"cwd":"${sessionCwd}"`)) continue;
+              }
+              bestPath = candidatePath;
+              bestMtime = cStat.mtimeMs;
+            } catch {
+              // skip
+            }
+          }
+
+          if (bestPath !== jsonlPath) {
+            const newId = bestPath.split('/').pop()?.replace('.jsonl', '') || '';
+            if (newId) {
+              session.restoreClaudeSessionId(newId);
+              ctx.persistSessionState(session);
+              jsonlPath = bestPath;
+            }
+          }
+        }
+      } catch {
+        // stat/scan failed — proceed with original path
+      }
+    }
+
     // Also check for subagent JSONL if requested
     if (subagentId && jsonlPath) {
       const parentDir = dirname(jsonlPath);

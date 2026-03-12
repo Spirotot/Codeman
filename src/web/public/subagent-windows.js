@@ -991,7 +991,12 @@ Object.assign(CodemanApp.prototype, {
     }
 
     // Clean up wizard drag listeners (leak fix: document-level handlers)
-    this.cleanupWizardDragging();
+    if (this.wizardDragListeners) {
+      document.removeEventListener('mousemove', this.wizardDragListeners.move);
+      document.removeEventListener('mouseup', this.wizardDragListeners.up);
+      this.wizardDragListeners = null;
+    }
+    this.wizardDragState = null;
 
     // Deactivate focus trap if wizard was open (leak fix: keydown listener)
     if (this.activeFocusTrap) {

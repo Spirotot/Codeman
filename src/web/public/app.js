@@ -1960,7 +1960,7 @@ class CodemanApp {
         this._localEchoOverlay?.rerender();
         // Resize PTY to match actual browser dimensions (critical for OpenCode
         // TUI sessions that render at fixed 120x40 until told the real size)
-        if (this.activeSessionId) {
+        if (this.activeSessionId && !(typeof ConversationView !== 'undefined' && ConversationView.isOpen())) {
           this.sendResize(this.activeSessionId);
         }
       }
@@ -3897,7 +3897,10 @@ class CodemanApp {
 
       // Fire-and-forget resize — don't await to avoid blocking UI.
       // The resize triggers an Ink redraw in Claude which streams back via SSE.
-      this.sendResize(sessionId);
+      // Skip when conversation view is open — terminal is display:none, dimensions are stale.
+      if (!(typeof ConversationView !== 'undefined' && ConversationView.isOpen())) {
+        this.sendResize(sessionId);
+      }
 
       // Defer secondary panel updates so they don't block the main thread
       // after terminal content is already visible.
@@ -7563,7 +7566,8 @@ class CodemanApp {
     // Strip device-specific keys — localEchoEnabled is per-platform (touch default differs)
     const { localEchoEnabled: _leo, ...serverSettings } = settings;
     try {
-      await this._apiPut('/api/settings', { ...serverSettings, notificationPreferences: notifPrefsToSave, voiceSettings });
+      const res = await this._apiPut('/api/settings', { ...serverSettings, notificationPreferences: notifPrefsToSave, voiceSettings });
+      if (!res || !res.ok) throw new Error('Server returned ' + (res ? res.status : 'no response'));
 
       // Save model configuration separately
       await this.saveModelConfigFromSettings();
@@ -7576,7 +7580,7 @@ class CodemanApp {
       }
     } catch (err) {
       // Server save failed but localStorage succeeded
-      this.showToast('Settings saved locally', 'warning');
+      this.showToast('Settings saved locally only — server error', 'warning');
     }
 
     this.closeAppSettings();
