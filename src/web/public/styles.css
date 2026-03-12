@@ -7862,6 +7862,52 @@ ol.cv-list { list-style: decimal; }
 .cv-send-btn:disabled { opacity: 0.3; cursor: default; }
 .cv-send-btn:not(:disabled):hover { opacity: 0.85; }
 
+/* Typing indicator — animated dots bubble */
+@keyframes cv-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+.cv-typing-indicator {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin: 4px 60px 4px 12px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 16px 16px 16px 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.cv-typing-indicator.cv-typing-visible {
+  display: flex;
+  opacity: 1;
+}
+
+.cv-typing-dots {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cv-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: cv-typing-bounce 1.4s infinite ease-in-out;
+}
+
+.cv-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.cv-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+.cv-typing-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* Conversation toggle button in toolbar — match .btn-voice styling */
 .btn-conversation {
   padding: 0.3rem 0.5rem;

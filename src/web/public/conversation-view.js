@@ -33,6 +33,8 @@ const ConversationView = (() => {
   const msgDataStore = new Map();
   /** @type {number|null} Auto-refresh interval ID */
   let refreshTimer = null;
+  /** @type {HTMLElement|null} Typing indicator element */
+  let typingIndicator = null;
 
   const PAGE_SIZE = 80;
 
@@ -406,6 +408,7 @@ const ConversationView = (() => {
       }
 
       updateHeader();
+      syncTypingIndicator();
     } catch (err) {
       console.error('[ConversationView] Failed to load messages:', err);
       if (messagesContainer) {
@@ -492,7 +495,12 @@ const ConversationView = (() => {
             if (html) {
               const div = document.createElement('div');
               div.innerHTML = html;
-              messagesContainer.appendChild(div.firstElementChild);
+              // Insert before typing indicator if visible, else append
+              if (typingIndicator && typingIndicator.parentNode === messagesContainer) {
+                messagesContainer.insertBefore(div.firstElementChild, typingIndicator);
+              } else {
+                messagesContainer.appendChild(div.firstElementChild);
+              }
             }
             if (newMsgs[i].index > newestIndex) newestIndex = newMsgs[i].index;
           }
@@ -529,6 +537,97 @@ const ConversationView = (() => {
     }
   }
 
+  // ─── Typing Indicator ─────────────────────────────────────────
+
+  /** Create the typing indicator element (lazy, reused) */
+  function ensureTypingIndicator() {
+    if (typingIndicator) return;
+    typingIndicator = document.createElement('div');
+    typingIndicator.className = 'cv-typing-indicator';
+    typingIndicator.innerHTML =
+      '<div class="cv-typing-dots">' +
+      '<span class="cv-typing-dot"></span>' +
+      '<span class="cv-typing-dot"></span>' +
+      '<span class="cv-typing-dot"></span>' +
+      '</div>' +
+      '<span class="cv-typing-label">Claude is thinking</span>';
+  }
+
+  /** Show the typing indicator at the bottom of the messages list */
+  function showTypingIndicator() {
+    if (!messagesContainer || !isOpen) return;
+    ensureTypingIndicator();
+    if (typingIndicator.parentNode !== messagesContainer) {
+      messagesContainer.appendChild(typingIndicator);
+    }
+    typingIndicator.classList.add('cv-typing-visible');
+    // Auto-scroll if user is near the bottom
+    const wasAtBottom =
+      messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 80;
+    if (wasAtBottom) {
+      requestAnimationFrame(() => {
+        if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      });
+    }
+  }
+
+  /** Hide the typing indicator */
+  function hideTypingIndicator() {
+    if (typingIndicator) {
+      typingIndicator.classList.remove('cv-typing-visible');
+      setTimeout(() => {
+        if (typingIndicator && !typingIndicator.classList.contains('cv-typing-visible')) {
+          typingIndicator.remove();
+        }
+      }, 160);
+    }
+  }
+
+  /** Sync typing indicator with current session status */
+  function syncTypingIndicator() {
+    if (!isOpen || !currentSessionId) return;
+    if (typeof app === 'undefined') return;
+    const session = app.sessions?.get(currentSessionId);
+    if (session && (session.status === 'busy' || session.status === 'working')) {
+      showTypingIndicator();
+    } else {
+      hideTypingIndicator();
+    }
+  }
+
+  /** SSE handler: session:working → show indicator */
+  function onSSEWorking(e) {
+    if (!isOpen || !currentSessionId) return;
+    try {
+      const data = JSON.parse(e.data);
+      if (data.id === currentSessionId) showTypingIndicator();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** SSE handler: session:idle → hide indicator */
+  function onSSEIdle(e) {
+    if (!isOpen || !currentSessionId) return;
+    try {
+      const data = JSON.parse(e.data);
+      if (data.id === currentSessionId) hideTypingIndicator();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** SSE handler: session:completion → hide indicator */
+  function onSSECompletion(e) {
+    if (!isOpen || !currentSessionId) return;
+    try {
+      const data = JSON.parse(e.data);
+      if (data.id === currentSessionId) hideTypingIndicator();
+    } catch {
+      /* ignore */
+    }
+  }
+
   function startAutoRefresh() {
     stopAutoRefresh();
     // Listen to SSE events for real-time updates
@@ -536,6 +635,12 @@ const ConversationView = (() => {
       app.eventSource.addEventListener('session:terminal', onSSETerminalEvent);
       app.eventSource.addEventListener('session:completion', onSSETerminalEvent);
       app.eventSource.addEventListener('session:idle', onSSETerminalEvent);
+    }
+    // Typing indicator SSE events
+    if (typeof app !== 'undefined' && app.eventSource) {
+      app.eventSource.addEventListener('session:working', onSSEWorking);
+      app.eventSource.addEventListener('session:idle', onSSEIdle);
+      app.eventSource.addEventListener('session:completion', onSSECompletion);
     }
     // Fallback: poll every 10s in case SSE events are missed
     refreshTimer = setInterval(fetchNewMessages, 10000);
@@ -551,6 +656,9 @@ const ConversationView = (() => {
       app.eventSource.removeEventListener('session:terminal', onSSETerminalEvent);
       app.eventSource.removeEventListener('session:completion', onSSETerminalEvent);
       app.eventSource.removeEventListener('session:idle', onSSETerminalEvent);
+      app.eventSource.removeEventListener('session:working', onSSEWorking);
+      app.eventSource.removeEventListener('session:idle', onSSEIdle);
+      app.eventSource.removeEventListener('session:completion', onSSECompletion);
     }
   }
 
@@ -680,6 +788,7 @@ const ConversationView = (() => {
       if (!panel) return;
       isOpen = false;
       stopAutoRefresh();
+      hideTypingIndicator();
       panel.style.display = 'none';
 
       // Restore terminal + toolbar + keyboard accessory
