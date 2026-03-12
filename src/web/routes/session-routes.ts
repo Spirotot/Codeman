@@ -926,8 +926,14 @@ export function registerSessionRoutes(
 
   const TOOL_RESULT_TRUNCATE = 2000;
 
-  /** Detect teammate/system notification messages masquerading as user messages */
-  const TEAMMATE_MESSAGE_PATTERN = /^<teammate-message\s/;
+  /** Detect system/internal messages masquerading as user messages */
+  const SYSTEM_USER_PATTERNS = [
+    /^<teammate-message\s/, // teammate/task notifications
+    /^This session is being continued from a previous conversation/, // compaction summary
+    /^<command-name>\//, // slash command (e.g. /compact)
+    /^<local-command-stdout>/, // slash command output
+    /^<system-reminder>/, // system reminders injected into user turns
+  ];
 
   interface ConversationMessage {
     index: number;
@@ -1010,16 +1016,16 @@ export function registerSessionRoutes(
       const message = entry.message as { content?: unknown; role?: string } | undefined;
       if (message?.content) {
         if (typeof message.content === 'string') {
-          const msgType = TEAMMATE_MESSAGE_PATTERN.test(message.content.trimStart()) ? 'system' : 'user';
-          results.push({ index: 0, type: msgType, content: message.content, timestamp });
+          const isSystem = SYSTEM_USER_PATTERNS.some((p) => p.test((message.content as string).trimStart()));
+          results.push({ index: 0, type: isSystem ? 'system' : 'user', content: message.content, timestamp });
         } else if (Array.isArray(message.content)) {
           const textParts = (message.content as Array<{ type: string; text?: string }>)
             .filter((b) => b.type === 'text' && b.text)
             .map((b) => b.text)
             .join('\n');
           if (textParts) {
-            const msgType = TEAMMATE_MESSAGE_PATTERN.test(textParts.trimStart()) ? 'system' : 'user';
-            results.push({ index: 0, type: msgType, content: textParts, timestamp });
+            const isSystem = SYSTEM_USER_PATTERNS.some((p) => p.test(textParts.trimStart()));
+            results.push({ index: 0, type: isSystem ? 'system' : 'user', content: textParts, timestamp });
           }
         }
       }
@@ -1059,6 +1065,9 @@ export function registerSessionRoutes(
           }
         }
       }
+    } else if (type === 'system') {
+      // System-level JSONL entries (e.g. context window info) — skip, not displayable
+      return results;
     } else if (type === 'tool_result') {
       const toolUseId = entry.tool_use_id as string | undefined;
       const isError = entry.is_error === true;

@@ -111,13 +111,38 @@ const ConversationView = (() => {
   /** Flush accumulated list items into a proper <ul> or <ol> */
   function flushList(listItems, html) {
     if (listItems.length === 0) return;
-    const isOrdered = listItems[0].ordered;
-    const tag = isOrdered ? 'ol' : 'ul';
-    html.push(`<${tag} class="cv-list">`);
+    // Build nested list structure from indent depths
+    let out = '';
+    const stack = []; // stack of { tag, indent }
     for (const item of listItems) {
-      html.push(`<li>${renderInline(item.text)}</li>`);
+      const tag = item.ordered ? 'ol' : 'ul';
+      const depth = item.indent;
+      // Close deeper levels
+      while (stack.length > 0 && stack[stack.length - 1].indent > depth) {
+        out += `</li></${stack.pop().tag}>`;
+      }
+      // Same level or switching list type at same level
+      if (stack.length > 0 && stack[stack.length - 1].indent === depth) {
+        if (stack[stack.length - 1].tag !== tag) {
+          out += `</li></${stack.pop().tag}>`;
+          out += `<${tag} class="cv-list">`;
+          stack.push({ tag, indent: depth });
+        } else {
+          out += '</li>';
+        }
+      }
+      // Open deeper level
+      if (stack.length === 0 || stack[stack.length - 1].indent < depth) {
+        out += `<${tag} class="cv-list">`;
+        stack.push({ tag, indent: depth });
+      }
+      out += `<li>${renderInline(item.text)}`;
     }
-    html.push(`</${tag}>`);
+    // Close remaining open tags
+    while (stack.length > 0) {
+      out += `</li></${stack.pop().tag}>`;
+    }
+    html.push(out);
     listItems.length = 0;
   }
 
@@ -180,12 +205,14 @@ const ConversationView = (() => {
 
       // Unordered list items
       if (/^\s*[-*]\s/.test(line)) {
-        pendingList.push({ ordered: false, text: line.replace(/^\s*[-*]\s/, '') });
+        const indent = line.match(/^(\s*)/)[1].length;
+        pendingList.push({ ordered: false, indent, text: line.replace(/^\s*[-*]\s/, '') });
         continue;
       }
       // Ordered list items
       if (/^\s*\d+\.\s/.test(line)) {
-        pendingList.push({ ordered: true, text: line.replace(/^\s*\d+\.\s/, '') });
+        const indent = line.match(/^(\s*)/)[1].length;
+        pendingList.push({ ordered: true, indent, text: line.replace(/^\s*\d+\.\s/, '') });
         continue;
       }
       if (pendingList.length > 0) flushList(pendingList, html);
