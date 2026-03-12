@@ -7607,10 +7607,23 @@ h1.cv-h { font-size: 1.2em; }
 h2.cv-h { font-size: 1.1em; }
 h3.cv-h, h4.cv-h { font-size: 1em; }
 .cv-p { margin: 4px 0; }
-.cv-li { padding-left: 16px; position: relative; margin: 2px 0; }
-.cv-li::before { content: '•'; position: absolute; left: 4px; color: var(--text-muted); }
+.cv-list { margin: 4px 0; padding-left: 20px; }
+.cv-list li { margin: 2px 0; }
+ul.cv-list { list-style: disc; }
+ol.cv-list { list-style: decimal; }
 .cv-spacer { height: 8px; }
-.cv-table-row { font-family: monospace; font-size: 12px; white-space: pre; overflow-x: auto; }
+.cv-hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+
+/* Tables */
+.cv-table-wrap { overflow-x: auto; margin: 6px 0; border-radius: 6px; border: 1px solid var(--border); }
+.cv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cv-table th, .cv-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.cv-table th { font-weight: 600; background: rgba(255,255,255,0.05); white-space: nowrap; }
+.cv-table tr:last-child td { border-bottom: none; }
+.cv-table tr:hover td { background: rgba(255,255,255,0.03); }
+.cv-user .cv-table-wrap { border-color: rgba(255,255,255,0.15); }
+.cv-user .cv-table th { background: rgba(0,0,0,0.15); }
+.cv-user .cv-table tr:hover td { background: rgba(0,0,0,0.1); }
 
 .cv-code {
   background: rgba(0,0,0,0.3);

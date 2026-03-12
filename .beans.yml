@@ -1,0 +1,6 @@
+beans:
+    path: /Users/bitfieldz/PARA/_beans
+    prefix: COMA-
+    id_length: 4
+    default_status: todo
+    default_type: task

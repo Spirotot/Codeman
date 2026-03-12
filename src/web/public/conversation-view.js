@@ -42,6 +42,88 @@ const ConversationView = (() => {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  /** Check if a line is a markdown table separator (e.g. |---|:---:|---:| ) */
+  function isTableSeparator(line) {
+    return /^\|[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)*\|?\s*$/.test(line.trim());
+  }
+
+  /** Parse a table row into cells (splits on | and trims) */
+  function parseTableRow(line) {
+    // Remove leading/trailing pipes, split on |
+    const trimmed = line.trim().replace(/^\||\|$/g, '');
+    return trimmed.split('|').map((c) => c.trim());
+  }
+
+  /** Parse column alignments from separator row */
+  function parseTableAlign(line) {
+    return parseTableRow(line).map((cell) => {
+      const left = cell.startsWith(':');
+      const right = cell.endsWith(':');
+      if (left && right) return 'center';
+      if (right) return 'right';
+      return 'left';
+    });
+  }
+
+  /** Render accumulated table rows into an HTML <table> */
+  function renderTable(tableLines) {
+    if (tableLines.length < 2) {
+      // Not enough for header + separator — render as plain text
+      return tableLines.map((l) => `<p class="cv-p">${renderInline(l)}</p>`).join('\n');
+    }
+
+    const hasSeparator = isTableSeparator(tableLines[1]);
+    const aligns = hasSeparator ? parseTableAlign(tableLines[1]) : [];
+    const headerCells = parseTableRow(tableLines[0]);
+    const bodyStart = hasSeparator ? 2 : 1;
+
+    let out = '<div class="cv-table-wrap"><table class="cv-table">';
+
+    // Header
+    if (hasSeparator) {
+      out += '<thead><tr>';
+      headerCells.forEach((cell, i) => {
+        const align = aligns[i] && aligns[i] !== 'left' ? ` style="text-align:${aligns[i]}"` : '';
+        out += `<th${align}>${renderInline(cell)}</th>`;
+      });
+      out += '</tr></thead>';
+    }
+
+    // Body
+    out += '<tbody>';
+    for (let i = hasSeparator ? 0 : 0, r = bodyStart; r < tableLines.length; r++) {
+      const cells = parseTableRow(tableLines[r]);
+      out += '<tr>';
+      cells.forEach((cell, ci) => {
+        const align = aligns[ci] && aligns[ci] !== 'left' ? ` style="text-align:${aligns[ci]}"` : '';
+        out += `<td${align}>${renderInline(cell)}</td>`;
+      });
+      out += '</tr>';
+    }
+    out += '</tbody></table></div>';
+    return out;
+  }
+
+  /** Flush accumulated list items into a proper <ul> or <ol> */
+  function flushList(listItems, html) {
+    if (listItems.length === 0) return;
+    const isOrdered = listItems[0].ordered;
+    const tag = isOrdered ? 'ol' : 'ul';
+    html.push(`<${tag} class="cv-list">`);
+    for (const item of listItems) {
+      html.push(`<li>${renderInline(item.text)}</li>`);
+    }
+    html.push(`</${tag}>`);
+    listItems.length = 0;
+  }
+
+  /** Flush accumulated table lines into rendered HTML */
+  function flushTable(tableLines, html) {
+    if (tableLines.length === 0) return;
+    html.push(renderTable(tableLines));
+    tableLines.length = 0;
+  }
+
   function renderMarkdown(text) {
     if (!text) return '';
     const lines = text.split('\n');
@@ -49,12 +131,18 @@ const ConversationView = (() => {
     let inCodeBlock = false;
     let codeLang = '';
     let codeLines = [];
+    let pendingList = []; // accumulated list items
+    let pendingTable = []; // accumulated table lines
 
     for (const line of lines) {
       // Code block fence
       if (line.trimStart().startsWith('```')) {
+        flushList(pendingList, html);
+        flushTable(pendingTable, html);
         if (inCodeBlock) {
-          html.push(`<pre class="cv-code"><code class="lang-${escapeHtml(codeLang)}">${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+          html.push(
+            `<pre class="cv-code"><code class="lang-${escapeHtml(codeLang)}">${escapeHtml(codeLines.join('\n'))}</code></pre>`
+          );
           codeLines = [];
           inCodeBlock = false;
           codeLang = '';
@@ -69,28 +157,38 @@ const ConversationView = (() => {
         continue;
       }
 
+      // Table rows — accumulate consecutive lines starting with |
+      if (line.trim().startsWith('|') && line.includes('|', line.indexOf('|') + 1)) {
+        flushList(pendingList, html);
+        pendingTable.push(line);
+        continue;
+      }
+      if (pendingTable.length > 0) flushTable(pendingTable, html);
+
       // Headers
       const headerMatch = line.match(/^(#{1,4})\s+(.+)/);
       if (headerMatch) {
+        flushList(pendingList, html);
         const level = headerMatch[1].length;
         html.push(`<h${level} class="cv-h">${renderInline(headerMatch[2])}</h${level}>`);
         continue;
       }
 
-      // List items
+      // Unordered list items
       if (/^\s*[-*]\s/.test(line)) {
-        html.push(`<div class="cv-li">${renderInline(line.replace(/^\s*[-*]\s/, ''))}</div>`);
+        pendingList.push({ ordered: false, text: line.replace(/^\s*[-*]\s/, '') });
         continue;
       }
-      // Numbered list
+      // Ordered list items
       if (/^\s*\d+\.\s/.test(line)) {
-        html.push(`<div class="cv-li">${renderInline(line.replace(/^\s*\d+\.\s/, ''))}</div>`);
+        pendingList.push({ ordered: true, text: line.replace(/^\s*\d+\.\s/, '') });
         continue;
       }
+      if (pendingList.length > 0) flushList(pendingList, html);
 
-      // Table rows (basic — just render as monospace)
-      if (line.includes('|') && line.trim().startsWith('|')) {
-        html.push(`<div class="cv-table-row">${escapeHtml(line)}</div>`);
+      // Horizontal rule
+      if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
+        html.push('<hr class="cv-hr">');
         continue;
       }
 
@@ -103,6 +201,10 @@ const ConversationView = (() => {
       // Regular paragraph
       html.push(`<p class="cv-p">${renderInline(line)}</p>`);
     }
+
+    // Flush any remaining accumulated blocks
+    flushList(pendingList, html);
+    flushTable(pendingTable, html);
 
     // Unclosed code block
     if (inCodeBlock && codeLines.length > 0) {
@@ -159,8 +261,15 @@ const ConversationView = (() => {
 
   function toolIcon(toolName) {
     const icons = {
-      Read: '📖', Edit: '✏️', Write: '📝', Bash: '⚡', Grep: '🔍',
-      Glob: '📁', Agent: '🤖', WebSearch: '🌐', WebFetch: '🌐',
+      Read: '📖',
+      Edit: '✏️',
+      Write: '📝',
+      Bash: '⚡',
+      Grep: '🔍',
+      Glob: '📁',
+      Agent: '🤖',
+      WebSearch: '🌐',
+      WebFetch: '🌐',
       ToolSearch: '🔧',
     };
     return icons[toolName] || '🔧';
@@ -395,7 +504,9 @@ const ConversationView = (() => {
           autoExpandSubagents();
         }
       }
-    } catch { /* ignore fetch errors */ }
+    } catch {
+      /* ignore fetch errors */
+    }
   }
 
   /** Debounced refresh — coalesces rapid SSE events into a single fetch */
@@ -413,7 +524,9 @@ const ConversationView = (() => {
       if (data.sessionId === currentSessionId) {
         scheduleRefresh();
       }
-    } catch { /* ignore parse errors */ }
+    } catch {
+      /* ignore parse errors */
+    }
   }
 
   function startAutoRefresh() {
@@ -544,8 +657,8 @@ const ConversationView = (() => {
       const termContainer = document.getElementById('terminalContainer');
       const welcome = document.getElementById('welcomeOverlay');
       const toolbar = document.querySelector('.toolbar');
-      const isMobile = typeof MobileDetection !== 'undefined' &&
-        MobileDetection.isTouchDevice() && window.innerWidth < 1024;
+      const isMobile =
+        typeof MobileDetection !== 'undefined' && MobileDetection.isTouchDevice() && window.innerWidth < 1024;
       if (termContainer) termContainer.style.display = 'none';
       if (welcome) welcome.style.display = 'none';
       if (toolbar && isMobile) toolbar.style.display = 'none';
@@ -579,7 +692,12 @@ const ConversationView = (() => {
       if (typeof app !== 'undefined') {
         if (app.terminal) {
           // Refit terminal
-          if (app.fitAddon) try { app.fitAddon.fit(); } catch { /* ignore */ }
+          if (app.fitAddon)
+            try {
+              app.fitAddon.fit();
+            } catch {
+              /* ignore */
+            }
           // Load buffer if it wasn't loaded yet (mobile path skips buffer load).
           // Set _forceTerminalView so selectSession doesn't re-open conversation view,
           // then temporarily clear activeSessionId so the guard passes.
