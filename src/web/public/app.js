@@ -789,6 +789,11 @@ class CodemanApp {
       }
       this._resizeTimeout = setTimeout(() => {
         this._resizeTimeout = null;
+        // Skip ALL resize work while conversation view is open — the terminal container
+        // is display:none, so fitAddon would compute 0×0 dimensions and destroy content.
+        // A proper resize will happen when CV is closed and selectSession re-fits.
+        const cvOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
+        if (cvOpen) return;
         // Fit xterm.js to final container dimensions
         if (this.fitAddon) {
           this.fitAddon.fit();
@@ -816,8 +821,7 @@ class CodemanApp {
         // causes Ink to re-render at the new row count, garbling terminal output.
         // Local fit() still runs so xterm knows the viewport size for scrolling.
         const keyboardUp = typeof KeyboardHandler !== 'undefined' && KeyboardHandler.keyboardVisible;
-        const cvOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
-        if (this.activeSessionId && !keyboardUp && !cvOpen) {
+        if (this.activeSessionId && !keyboardUp) {
           const dims = this.fitAddon.proposeDimensions();
           // Enforce minimum dimensions to prevent layout issues
           const cols = dims ? Math.max(dims.cols, MIN_COLS) : MIN_COLS;
