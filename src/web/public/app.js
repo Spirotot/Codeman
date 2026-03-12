@@ -4004,6 +4004,11 @@ class CodemanApp {
     const isOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
     btn.classList.toggle('active', isOpen);
     btn.title = isOpen ? 'Show terminal' : 'Conversation view';
+    btn.ariaLabel = btn.title;
+    // Swap icon: chat bubble (closed) ↔ terminal (open)
+    btn.innerHTML = isOpen
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
   }
 
   _isAutoConversationView() {

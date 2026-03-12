@@ -7544,7 +7544,7 @@ kbd {
   gap: 4px;
 }
 
-.cv-close, .cv-terminal-toggle, .cv-refresh {
+.cv-refresh {
   background: none;
   border: none;
   color: var(--text-muted);
@@ -7555,7 +7555,7 @@ kbd {
   align-items: center;
 }
 
-.cv-close:hover, .cv-terminal-toggle:hover, .cv-refresh:hover {
+.cv-refresh:hover {
   color: var(--text);
   background: rgba(255,255,255,0.08);
 }

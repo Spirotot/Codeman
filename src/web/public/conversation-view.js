@@ -452,16 +452,10 @@ const ConversationView = (() => {
     panel.innerHTML = `
       <div class="cv-header">
         <div class="cv-header-left">
-          <button class="cv-close" onclick="ConversationView.close()" title="Back to terminal">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-          </button>
-          <span class="cv-title">Conversation History</span>
+          <span class="cv-title">Conversation</span>
           <span class="cv-count"></span>
         </div>
         <div class="cv-header-right">
-          <button class="cv-terminal-toggle" onclick="ConversationView.close()" title="Switch to terminal">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-          </button>
           <button class="cv-refresh" onclick="ConversationView.refresh()" title="Refresh">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           </button>
@@ -586,18 +580,21 @@ const ConversationView = (() => {
       panel.style.bottom = '';
       panel.style.height = '';
 
-      if (typeof app !== 'undefined' && app.terminal) {
-        // Refit terminal
-        if (app.fitAddon) try { app.fitAddon.fit(); } catch { /* ignore */ }
-        // Load buffer if it wasn't loaded yet (mobile path skips buffer load).
-        // Set _forceTerminalView so selectSession doesn't re-open conversation view,
-        // then temporarily clear activeSessionId so the guard passes.
-        const sid = app.activeSessionId;
-        if (sid && app.terminal.buffer.active.length <= 1) {
-          app._forceTerminalView = true;
-          app.activeSessionId = null;
-          app.selectSession(sid);
+      if (typeof app !== 'undefined') {
+        if (app.terminal) {
+          // Refit terminal
+          if (app.fitAddon) try { app.fitAddon.fit(); } catch { /* ignore */ }
+          // Load buffer if it wasn't loaded yet (mobile path skips buffer load).
+          // Set _forceTerminalView so selectSession doesn't re-open conversation view,
+          // then temporarily clear activeSessionId so the guard passes.
+          const sid = app.activeSessionId;
+          if (sid && app.terminal.buffer.active.length <= 1) {
+            app._forceTerminalView = true;
+            app.activeSessionId = null;
+            app.selectSession(sid);
+          }
         }
+        app._updateConversationToggleBtn();
       }
     },
 
