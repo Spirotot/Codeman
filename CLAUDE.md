@@ -84,7 +84,7 @@ Codeman is a Claude Code session manager with web interface and autonomous Ralph
 
 ## Common Gotchas
 
-- **Single-line prompts only** — `writeViaMux()` sends text+Enter separately; multi-line breaks Ink
+- **Multi-line input via bracketed paste** — `writeViaMux()` uses `tmux set-buffer` + `paste-buffer -p` for multi-line text (detects `\n`). Single-line still uses `send-keys -l` + Enter
 - **ESM only** — Never `require()`, use `await import()`. `tsx` masks CJS/ESM issues in dev but production breaks
 - **Package ≠ product name** — npm: `aicodeman`, product: **Codeman**. Release renames tags accordingly
 - **Global regex `lastIndex`** — Use `createAnsiPatternFull/Simple()` factories, not shared `g`-flag patterns in loops

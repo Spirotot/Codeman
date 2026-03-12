@@ -602,6 +602,7 @@ const ConversationView = (() => {
         input.style.height = 'auto';
         input.style.height = Math.min(input.scrollHeight, 120) + 'px';
         sendBtn.disabled = !input.value.trim();
+        input.classList.toggle('cv-input-multiline', input.value.includes('\n'));
       });
       // Send on Enter (without Shift)
       input.addEventListener('keydown', (e) => {

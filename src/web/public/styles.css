@@ -7840,6 +7840,7 @@ ol.cv-list { list-style: decimal; }
   font-family: inherit;
 }
 
+.cv-input.cv-input-multiline { border-radius: 12px; }
 .cv-input:focus { border-color: #1a6dea; }
 .cv-input::placeholder { color: var(--text-muted); }
 

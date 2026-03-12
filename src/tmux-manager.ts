@@ -1264,14 +1264,39 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
 
     try {
       const hasCarriageReturn = input.includes('\r');
-      const textPart = input.replace(/\r/g, '').replace(/\n/g, '').trimEnd();
+      const textPart = input.replace(/\r/g, '').trimEnd();
+      const hasNewlines = textPart.includes('\n');
 
-      if (textPart && hasCarriageReturn) {
-        // Send text first, then Enter as a SEPARATE tmux command after a short delay.
-        // Ink (Claude CLI's terminal framework) needs them split — sending both in a
-        // single tmux invocation (via \;) causes Ink to interpret Enter as a newline
-        // character in the input buffer rather than as form submission.
-        await execAsync(`tmux send-keys -t "${session.muxName}" -l ${shellescape(textPart)}`, {
+      if (textPart && hasNewlines && hasCarriageReturn) {
+        // Multi-line with Enter: use set-buffer + paste-buffer -p (bracketed paste).
+        // The -p flag wraps content in \e[200~ / \e[201~ escape sequences, which tells
+        // Ink to treat newlines as literal content, not as form submission.
+        const bufName = `codeman-${session.muxName.slice(-8)}`;
+        await execAsync(`tmux set-buffer -b ${shellescape(bufName)} ${shellescape(textPart)}`, {
+          timeout: EXEC_TIMEOUT_MS,
+        });
+        await execAsync(`tmux paste-buffer -p -d -b ${shellescape(bufName)} -t "${session.muxName}"`, {
+          timeout: EXEC_TIMEOUT_MS,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await execAsync(`tmux send-keys -t "${session.muxName}" Enter`, {
+          timeout: EXEC_TIMEOUT_MS,
+        });
+      } else if (textPart && hasNewlines) {
+        // Multi-line without Enter: just paste
+        const bufName = `codeman-${session.muxName.slice(-8)}`;
+        await execAsync(`tmux set-buffer -b ${shellescape(bufName)} ${shellescape(textPart)}`, {
+          timeout: EXEC_TIMEOUT_MS,
+        });
+        await execAsync(`tmux paste-buffer -p -d -b ${shellescape(bufName)} -t "${session.muxName}"`, {
+          timeout: EXEC_TIMEOUT_MS,
+        });
+      } else if (textPart && hasCarriageReturn) {
+        // Single-line with Enter: send text first, then Enter after a short delay.
+        // Ink needs them split — sending both in a single tmux invocation causes
+        // Ink to interpret Enter as a newline rather than form submission.
+        const singleLine = textPart.replace(/\n/g, '');
+        await execAsync(`tmux send-keys -t "${session.muxName}" -l ${shellescape(singleLine)}`, {
           timeout: EXEC_TIMEOUT_MS,
         });
         await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1280,7 +1305,8 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
         });
       } else if (textPart) {
         // Text only, no Enter
-        await execAsync(`tmux send-keys -t "${session.muxName}" -l ${shellescape(textPart)}`, {
+        const singleLine = textPart.replace(/\n/g, '');
+        await execAsync(`tmux send-keys -t "${session.muxName}" -l ${shellescape(singleLine)}`, {
           timeout: EXEC_TIMEOUT_MS,
         });
       } else if (hasCarriageReturn) {
@@ -1418,10 +1444,37 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
 
     try {
       const hasCarriageReturn = input.includes('\r');
-      const textPart = input.replace(/\r/g, '').replace(/\n/g, '').trimEnd();
+      const textPart = input.replace(/\r/g, '').trimEnd();
+      const hasNewlines = textPart.includes('\n');
 
-      if (textPart && hasCarriageReturn) {
-        execSync(`tmux send-keys -t ${shellescape(target)} -l ${shellescape(textPart)}`, {
+      if (textPart && hasNewlines && hasCarriageReturn) {
+        // Multi-line with Enter: bracketed paste via set-buffer + paste-buffer -p
+        const bufName = `codeman-pane-${target.slice(-8)}`;
+        execSync(`tmux set-buffer -b ${shellescape(bufName)} ${shellescape(textPart)}`, {
+          encoding: 'utf-8',
+          timeout: EXEC_TIMEOUT_MS,
+        });
+        execSync(`tmux paste-buffer -p -d -b ${shellescape(bufName)} -t ${shellescape(target)}`, {
+          encoding: 'utf-8',
+          timeout: EXEC_TIMEOUT_MS,
+        });
+        execSync(`tmux send-keys -t ${shellescape(target)} Enter`, {
+          encoding: 'utf-8',
+          timeout: EXEC_TIMEOUT_MS,
+        });
+      } else if (textPart && hasNewlines) {
+        const bufName = `codeman-pane-${target.slice(-8)}`;
+        execSync(`tmux set-buffer -b ${shellescape(bufName)} ${shellescape(textPart)}`, {
+          encoding: 'utf-8',
+          timeout: EXEC_TIMEOUT_MS,
+        });
+        execSync(`tmux paste-buffer -p -d -b ${shellescape(bufName)} -t ${shellescape(target)}`, {
+          encoding: 'utf-8',
+          timeout: EXEC_TIMEOUT_MS,
+        });
+      } else if (textPart && hasCarriageReturn) {
+        const singleLine = textPart.replace(/\n/g, '');
+        execSync(`tmux send-keys -t ${shellescape(target)} -l ${shellescape(singleLine)}`, {
           encoding: 'utf-8',
           timeout: EXEC_TIMEOUT_MS,
         });
@@ -1430,7 +1483,8 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
           timeout: EXEC_TIMEOUT_MS,
         });
       } else if (textPart) {
-        execSync(`tmux send-keys -t ${shellescape(target)} -l ${shellescape(textPart)}`, {
+        const singleLine = textPart.replace(/\n/g, '');
+        execSync(`tmux send-keys -t ${shellescape(target)} -l ${shellescape(singleLine)}`, {
           encoding: 'utf-8',
           timeout: EXEC_TIMEOUT_MS,
         });
