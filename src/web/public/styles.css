@@ -7571,6 +7571,22 @@ kbd {
 }
 .cv-close-btn:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 
+.cv-stop-btn {
+  background: none;
+  border: none;
+  color: #e85d4a;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.15s;
+}
+.cv-stop-btn:hover { background: rgba(232, 93, 74, 0.15); }
+.cv-stop-btn:active { opacity: 0.7; }
+.cv-stop-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+
 .cv-title {
   font-size: 13px;
   font-weight: 600;
@@ -7619,6 +7635,14 @@ kbd {
 .cv-user .cv-msg-label { color: rgba(255,255,255,0.7); }
 .cv-user a { color: #a8d4ff; }
 
+.cv-system {
+  background: transparent;
+  border: 1px dashed var(--border);
+  opacity: 0.65;
+  font-size: 12px;
+}
+.cv-system .cv-msg-label { color: var(--text-muted); }
+
 .cv-assistant {
   background: var(--bg-secondary, #1a1a2e);
   border: 1px solid var(--border);
@@ -7656,6 +7680,7 @@ ol.cv-list { list-style: decimal; }
   padding: 8px 10px;
   margin: 6px 0;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   font-size: 12px;
   line-height: 1.4;
   max-height: 300px;

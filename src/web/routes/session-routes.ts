@@ -926,9 +926,12 @@ export function registerSessionRoutes(
 
   const TOOL_RESULT_TRUNCATE = 2000;
 
+  /** Detect teammate/system notification messages masquerading as user messages */
+  const TEAMMATE_MESSAGE_PATTERN = /^<teammate-message\s/;
+
   interface ConversationMessage {
     index: number;
-    type: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'thinking';
+    type: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'thinking' | 'system';
     timestamp?: string;
     content?: string;
     toolName?: string;
@@ -1007,14 +1010,16 @@ export function registerSessionRoutes(
       const message = entry.message as { content?: unknown; role?: string } | undefined;
       if (message?.content) {
         if (typeof message.content === 'string') {
-          results.push({ index: 0, type: 'user', content: message.content, timestamp });
+          const msgType = TEAMMATE_MESSAGE_PATTERN.test(message.content.trimStart()) ? 'system' : 'user';
+          results.push({ index: 0, type: msgType, content: message.content, timestamp });
         } else if (Array.isArray(message.content)) {
           const textParts = (message.content as Array<{ type: string; text?: string }>)
             .filter((b) => b.type === 'text' && b.text)
             .map((b) => b.text)
             .join('\n');
           if (textParts) {
-            results.push({ index: 0, type: 'user', content: textParts, timestamp });
+            const msgType = TEAMMATE_MESSAGE_PATTERN.test(textParts.trimStart()) ? 'system' : 'user';
+            results.push({ index: 0, type: msgType, content: textParts, timestamp });
           }
         }
       }

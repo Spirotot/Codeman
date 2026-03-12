@@ -481,6 +481,23 @@ const SwipeHandler = {
     this.startX = e.touches[0].clientX;
     this.startY = e.touches[0].clientY;
     this.startTime = Date.now();
+    this._touchTarget = e.target;
+  },
+
+  /** Check if touch target is inside a horizontally-scrollable element */
+  _isInsideHorizontalScroller(target) {
+    let el = target;
+    const boundary = this._element;
+    while (el && el !== boundary) {
+      if (el.scrollWidth > el.clientWidth + 1) {
+        const style = getComputedStyle(el);
+        if (style.overflowX === 'auto' || style.overflowX === 'scroll') {
+          return true;
+        }
+      }
+      el = el.parentElement;
+    }
+    return false;
   },
 
   onTouchEnd(e) {
@@ -497,6 +514,9 @@ const SwipeHandler = {
     if (elapsed > this.maxSwipeTime) return;  // Too slow
     if (deltaY > this.maxVerticalDrift) return;  // Too much vertical movement
     if (Math.abs(deltaX) < this.minSwipeDistance) return;  // Too short
+
+    // Don't switch tabs if swiping inside a horizontally-scrollable element
+    if (this._touchTarget && this._isInsideHorizontalScroller(this._touchTarget)) return;
 
     // Valid swipe detected
     if (deltaX > 0) {

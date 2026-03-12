@@ -35,6 +35,8 @@ const ConversationView = (() => {
   let refreshTimer = null;
   /** @type {HTMLElement|null} Typing indicator element */
   let typingIndicator = null;
+  /** @type {boolean} Whether the session is currently working (for stop button visibility) */
+  let sessionBusy = false;
 
   const PAGE_SIZE = 80;
 
@@ -291,6 +293,12 @@ const ConversationView = (() => {
           <div class="cv-msg-body">${renderMarkdown(msg.content)}</div>
         </div>`;
 
+      case 'system':
+        return `<div class="cv-msg cv-system">
+          <div class="cv-msg-label">System</div>
+          <div class="cv-msg-body">${renderMarkdown(msg.content)}</div>
+        </div>`;
+
       case 'assistant':
         return `<div class="cv-msg cv-assistant">
           <div class="cv-msg-body">${renderMarkdown(msg.content)}</div>
@@ -409,6 +417,7 @@ const ConversationView = (() => {
 
       updateHeader();
       syncTypingIndicator();
+      syncStopButton();
     } catch (err) {
       console.error('[ConversationView] Failed to load messages:', err);
       if (messagesContainer) {
@@ -595,34 +604,71 @@ const ConversationView = (() => {
     }
   }
 
-  /** SSE handler: session:working → show indicator */
+  // ─── Stop Button ───────────────────────────────────────────────
+
+  function showStopButton() {
+    sessionBusy = true;
+    const btn = panel?.querySelector('#cvStopBtn');
+    if (btn) btn.style.display = '';
+  }
+
+  function hideStopButton() {
+    sessionBusy = false;
+    const btn = panel?.querySelector('#cvStopBtn');
+    if (btn) {
+      btn.style.display = 'none';
+      btn.disabled = false;
+    }
+  }
+
+  function syncStopButton() {
+    if (!isOpen || !currentSessionId) return;
+    if (typeof app === 'undefined') return;
+    const session = app.sessions?.get(currentSessionId);
+    if (session && (session.status === 'busy' || session.status === 'working')) {
+      showStopButton();
+    } else {
+      hideStopButton();
+    }
+  }
+
+  /** SSE handler: session:working → show indicator + stop button */
   function onSSEWorking(e) {
     if (!isOpen || !currentSessionId) return;
     try {
       const data = JSON.parse(e.data);
-      if (data.id === currentSessionId) showTypingIndicator();
+      if (data.id === currentSessionId) {
+        showTypingIndicator();
+        showStopButton();
+      }
     } catch {
       /* ignore */
     }
   }
 
-  /** SSE handler: session:idle → hide indicator */
+  /** SSE handler: session:idle → hide indicator + stop button */
   function onSSEIdle(e) {
     if (!isOpen || !currentSessionId) return;
     try {
       const data = JSON.parse(e.data);
-      if (data.id === currentSessionId) hideTypingIndicator();
+      if (data.id === currentSessionId) {
+        hideTypingIndicator();
+        hideStopButton();
+      }
     } catch {
       /* ignore */
     }
   }
 
-  /** SSE handler: session:completion → hide indicator */
+  /** SSE handler: session:completion → hide indicator + stop button */
   function onSSECompletion(e) {
     if (!isOpen || !currentSessionId) return;
     try {
       const data = JSON.parse(e.data);
-      if (data.id === currentSessionId) hideTypingIndicator();
+      if (data.id === currentSessionId) {
+        hideTypingIndicator();
+        hideStopButton();
+      }
     } catch {
       /* ignore */
     }
@@ -677,6 +723,9 @@ const ConversationView = (() => {
           <span class="cv-count"></span>
         </div>
         <div class="cv-header-right">
+          <button class="cv-stop-btn" id="cvStopBtn" onclick="ConversationView.interruptSession()" title="Stop Claude (Ctrl+C)" style="display:none">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
+          </button>
           <button class="cv-close-btn" onclick="ConversationView.close()" title="Back to terminal">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
           </button>
@@ -712,11 +761,16 @@ const ConversationView = (() => {
         sendBtn.disabled = !input.value.trim();
         input.classList.toggle('cv-input-multiline', input.value.includes('\n'));
       });
-      // Send on Enter (without Shift)
+      // Send on Enter (without Shift) — desktop only.
+      // On mobile, Enter inserts a newline; the send button is the only way to send.
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          if (input.value.trim()) ConversationView.sendMessage();
+          const isMobile =
+            typeof MobileDetection !== 'undefined' && MobileDetection.isTouchDevice() && window.innerWidth < 1024;
+          if (!isMobile) {
+            e.preventDefault();
+            if (input.value.trim()) ConversationView.sendMessage();
+          }
         }
       });
     }
@@ -920,6 +974,27 @@ const ConversationView = (() => {
         if (sendBtn) sendBtn.disabled = true; // Reset until next input
         input.focus();
       }
+    },
+
+    /** Send Ctrl+C interrupt to stop the active session */
+    async interruptSession() {
+      if (!currentSessionId) return;
+      const btn = panel?.querySelector('#cvStopBtn');
+      if (btn) btn.disabled = true;
+
+      try {
+        await fetch(`/api/sessions/${currentSessionId}/input`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: '\x03' }),
+        });
+      } catch (err) {
+        console.error('[ConversationView] Interrupt failed:', err);
+      }
+
+      setTimeout(() => {
+        if (btn) btn.disabled = false;
+      }, 1500);
     },
 
     refresh() {
