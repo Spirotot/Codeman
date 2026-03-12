@@ -694,23 +694,37 @@ const ConversationView = (() => {
       panel.style.height = '';
 
       if (typeof app !== 'undefined') {
-        if (app.terminal) {
-          // Refit terminal
-          if (app.fitAddon)
+        // Mark as user-dismissed so tab switching doesn't auto-reopen CV
+        app._forceTerminalView = true;
+
+        const sid = app.activeSessionId;
+        if (app.terminal && app.fitAddon) {
+          // Wait one frame for the browser to reflow after display:none → display:''
+          // before measuring dimensions. Without this, proposeDimensions() may return
+          // stale or zero values because the terminal container hasn't laid out yet.
+          requestAnimationFrame(() => {
             try {
               app.fitAddon.fit();
             } catch {
               /* ignore */
             }
-          // Load buffer if it wasn't loaded yet (mobile path skips buffer load).
-          // Set _forceTerminalView so selectSession doesn't re-open conversation view,
-          // then temporarily clear activeSessionId so the guard passes.
-          const sid = app.activeSessionId;
-          if (sid && app.terminal.buffer.active.length <= 1) {
-            app._forceTerminalView = true;
-            app.activeSessionId = null;
-            app.selectSession(sid);
-          }
+            // Send server resize so tmux/Ink redraws at correct dimensions
+            if (sid) {
+              const dims = app.fitAddon.proposeDimensions();
+              if (dims) {
+                fetch(`/api/sessions/${sid}/resize`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ cols: Math.max(dims.cols, 40), rows: Math.max(dims.rows, 10) }),
+                }).catch(() => {});
+              }
+            }
+            // Load buffer if it wasn't loaded yet (mobile path skips buffer load).
+            if (sid && app.terminal.buffer.active.length <= 1) {
+              app.activeSessionId = null;
+              app.selectSession(sid);
+            }
+          });
         }
         app._updateConversationToggleBtn();
       }
