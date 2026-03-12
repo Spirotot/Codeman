@@ -745,8 +745,20 @@ class CodemanApp {
         isTouching = false;
         velocity = 0;
       }, { passive: true });
+    } else {
+      // Mobile: block xterm.js internal touch handlers so native iOS momentum scrolling works.
+      // xterm.js registers touchstart/touchmove on .xterm (the viewport's parent) in the
+      // bubbling phase. Its handleTouchMove() manually computes scroll delta (no momentum)
+      // and calls preventDefault() via _bubbleScroll(), killing native inertia scrolling.
+      // By capturing on .xterm-viewport and stopping propagation, events never reach xterm.js
+      // handlers, but the browser still does native touch scrolling (stopPropagation doesn't
+      // prevent default behavior — only preventDefault does that).
+      const viewport = container.querySelector('.xterm-viewport');
+      if (viewport) {
+        viewport.addEventListener('touchstart', (e) => { e.stopPropagation(); }, { capture: true, passive: true });
+        viewport.addEventListener('touchmove', (e) => { e.stopPropagation(); }, { capture: true, passive: true });
+      }
     }
-    // Mobile: native scrolling handles touch via CSS
 
     // Welcome message
     this.showWelcome();

@@ -1905,6 +1905,20 @@ body {
   background: transparent !important;
 }
 
+/* Mobile: enable native touch scrolling with iOS momentum/inertia.
+   xterm.js's default touch handlers manually compute scroll deltas (no momentum)
+   and call preventDefault() which kills native inertia. The JS in app.js blocks
+   those handlers via capture-phase stopPropagation on this element. */
+@media (pointer: coarse), (max-width: 1023px) {
+  .terminal-container .xterm-viewport {
+    overflow-y: scroll !important;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    position: relative;
+    z-index: 10;
+  }
+}
+
 /* Welcome Overlay */
 .welcome-overlay {
   position: absolute;
@@ -7544,7 +7558,18 @@ kbd {
   gap: 4px;
 }
 
-
+.cv-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cv-close-btn:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 
 .cv-title {
   font-size: 13px;
