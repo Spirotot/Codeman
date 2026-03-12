@@ -203,6 +203,8 @@ export interface SessionEvents {
     accountType: string | null;
     latestVersion: string | null;
   }) => void;
+  /** Claude's internal session ID changed (e.g., after /resume) */
+  claudeSessionIdChanged: (claudeSessionId: string) => void;
 }
 
 // SessionMode is imported from types.ts (single source of truth)
@@ -526,6 +528,11 @@ export class Session extends EventEmitter {
     return this._claudeSessionId;
   }
 
+  /** Restore claudeSessionId from persisted state (called during server recovery) */
+  restoreClaudeSessionId(id: string): void {
+    this._claudeSessionId = id;
+  }
+
   get totalCost(): number {
     return this._totalCost;
   }
@@ -794,6 +801,7 @@ export class Session extends EventEmitter {
       cliLatestVersion: this._cliLatestVersion || undefined,
       openCodeConfig: this._openCodeConfig,
       resumeSessionId: this._resumeSessionId,
+      claudeSessionId: this._claudeSessionId && this._claudeSessionId !== this.id ? this._claudeSessionId : undefined,
     };
   }
 
@@ -960,7 +968,10 @@ export class Session extends EventEmitter {
           );
 
           // Set claudeSessionId — when resuming, the Claude conversation ID is the resumed one.
-          this._claudeSessionId = this._resumeSessionId || this.id;
+          // Preserve restored value (from state.json) if already set to a real Claude session ID.
+          if (!this._claudeSessionId || this._claudeSessionId === this.id) {
+            this._claudeSessionId = this._resumeSessionId || this.id;
+          }
         } catch (spawnErr) {
           console.error('[Session] Failed to spawn PTY for mux attachment:', spawnErr);
           this.emit('error', `Failed to attach to mux session: ${spawnErr}`);
@@ -1046,7 +1057,10 @@ export class Session extends EventEmitter {
     }
 
     // Set claudeSessionId — when resuming, the Claude conversation ID is the resumed one.
-    this._claudeSessionId = this._resumeSessionId || this.id;
+    // Preserve restored value (from state.json) if already set to a real Claude session ID.
+    if (!this._claudeSessionId || this._claudeSessionId === this.id) {
+      this._claudeSessionId = this._resumeSessionId || this.id;
+    }
 
     this._pid = this.ptyProcess.pid;
     console.log('[Session] Interactive PTY spawned with PID:', this._pid);
@@ -1624,6 +1638,7 @@ export class Session extends EventEmitter {
             ((msg as unknown as Record<string, unknown>).sessionId as string | undefined) ?? msg.session_id;
           if (msgSessionId && msgSessionId !== this._claudeSessionId) {
             this._claudeSessionId = msgSessionId;
+            this.emit('claudeSessionIdChanged', msgSessionId);
           }
 
           // Process message for task tracking

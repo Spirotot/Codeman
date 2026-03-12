@@ -3963,9 +3963,15 @@ class CodemanApp {
       this.terminal.focus();
       this.terminal.scrollToBottom();
 
-      // Auto-open conversation view in portrait mode on touch devices
-      if (!this._forceTerminalView && this._isAutoConversationView() && typeof ConversationView !== 'undefined') {
-        ConversationView.open(sessionId);
+      // Update conversation view for the new session
+      if (typeof ConversationView !== 'undefined') {
+        if (ConversationView.isOpen()) {
+          // Already open — switch to new session's conversation
+          ConversationView.open(sessionId);
+        } else if (!this._forceTerminalView && this._isAutoConversationView()) {
+          // Auto-open in portrait mode on touch devices
+          ConversationView.open(sessionId);
+        }
       }
       this._updateConversationToggleBtn();
       this._initOrientationAutoSwitch();

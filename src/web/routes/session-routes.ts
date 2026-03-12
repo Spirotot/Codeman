@@ -1118,6 +1118,10 @@ export function registerSessionRoutes(
       }
     }
 
+    // If no JSONL found, the claudeSessionId hasn't been discovered yet.
+    // This happens when /resume was used inside Claude CLI — the real session ID
+    // is only known once Claude outputs a JSON message containing it (caught by
+    // session.ts line ~1635). Until then, conversation history is unavailable.
     if (!jsonlPath) {
       return { messages: [], total: 0, hasMore: false };
     }

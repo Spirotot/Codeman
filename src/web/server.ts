@@ -183,6 +183,7 @@ interface SessionListenerRefs {
   autoClear: (data: { tokens: number; threshold: number }) => void;
   autoCompact: (data: { tokens: number; threshold: number; prompt?: string }) => void;
   cliInfoUpdated: (data: { version?: string; model?: string; accountType?: string; latestVersion?: string }) => void;
+  claudeSessionIdChanged: (claudeSessionId: string) => void;
   ralphLoopUpdate: (state: RalphTrackerState) => void;
   ralphTodoUpdate: (todos: RalphTodoItem[]) => void;
   ralphCompletionDetected: (phrase: string) => void;
@@ -993,6 +994,7 @@ export class WebServer extends EventEmitter {
         session.off('autoClear', listeners.autoClear);
         session.off('autoCompact', listeners.autoCompact);
         session.off('cliInfoUpdated', listeners.cliInfoUpdated);
+        session.off('claudeSessionIdChanged', listeners.claudeSessionIdChanged);
         session.off('ralphLoopUpdate', listeners.ralphLoopUpdate);
         session.off('ralphTodoUpdate', listeners.ralphTodoUpdate);
         session.off('ralphCompletionDetected', listeners.ralphCompletionDetected);
@@ -1178,6 +1180,7 @@ export class WebServer extends EventEmitter {
             session.off('autoClear', listenerRefs.autoClear);
             session.off('autoCompact', listenerRefs.autoCompact);
             session.off('cliInfoUpdated', listenerRefs.cliInfoUpdated);
+            session.off('claudeSessionIdChanged', listenerRefs.claudeSessionIdChanged);
             session.off('ralphLoopUpdate', listenerRefs.ralphLoopUpdate);
             session.off('ralphTodoUpdate', listenerRefs.ralphTodoUpdate);
             session.off('ralphCompletionDetected', listenerRefs.ralphCompletionDetected);
@@ -1267,6 +1270,11 @@ export class WebServer extends EventEmitter {
       cliInfoUpdated: (data: { version?: string; model?: string; accountType?: string; latestVersion?: string }) => {
         this.broadcast(SseEvent.SessionCliInfo, { sessionId: session.id, ...data });
         this.broadcastSessionStateDebounced(session.id);
+      },
+
+      /** Persists state when Claude's internal session ID changes (after /resume) */
+      claudeSessionIdChanged: (_claudeSessionId: string) => {
+        this.persistSessionState(session);
       },
 
       // ─── Ralph Tracking Events ──────────────────────────────
@@ -1371,6 +1379,7 @@ export class WebServer extends EventEmitter {
     session.on('autoClear', listeners.autoClear);
     session.on('autoCompact', listeners.autoCompact);
     session.on('cliInfoUpdated', listeners.cliInfoUpdated);
+    session.on('claudeSessionIdChanged', listeners.claudeSessionIdChanged);
     session.on('ralphLoopUpdate', listeners.ralphLoopUpdate);
     session.on('ralphTodoUpdate', listeners.ralphTodoUpdate);
     session.on('ralphCompletionDetected', listeners.ralphCompletionDetected);
@@ -2611,6 +2620,13 @@ export class WebServer extends EventEmitter {
               if (savedState.flickerFilterEnabled !== undefined) {
                 session.flickerFilterEnabled = savedState.flickerFilterEnabled;
               }
+              // Claude session ID (differs from Codeman ID after /resume)
+              if (savedState.claudeSessionId) {
+                session.restoreClaudeSessionId(savedState.claudeSessionId);
+                console.log(
+                  `[Server] Restored claudeSessionId for session ${session.id}: ${savedState.claudeSessionId}`
+                );
+              }
               // Respawn controller (not supported for opencode sessions)
               if (session.mode !== 'opencode' && savedState.respawnEnabled && savedState.respawnConfig) {
                 try {
@@ -2789,6 +2805,7 @@ export class WebServer extends EventEmitter {
         session.off('autoClear', listeners.autoClear);
         session.off('autoCompact', listeners.autoCompact);
         session.off('cliInfoUpdated', listeners.cliInfoUpdated);
+        session.off('claudeSessionIdChanged', listeners.claudeSessionIdChanged);
         session.off('ralphLoopUpdate', listeners.ralphLoopUpdate);
         session.off('ralphTodoUpdate', listeners.ralphTodoUpdate);
         session.off('ralphCompletionDetected', listeners.ralphCompletionDetected);

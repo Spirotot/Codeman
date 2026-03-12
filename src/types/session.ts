@@ -145,6 +145,8 @@ export interface SessionState {
   openCodeConfig?: OpenCodeConfig;
   /** Claude conversation session ID to resume after reboot (set by restore script) */
   resumeSessionId?: string;
+  /** Claude's internal session ID (differs from Codeman ID after /resume) */
+  claudeSessionId?: string;
 }
 
 /**

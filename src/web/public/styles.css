@@ -7544,21 +7544,7 @@ kbd {
   gap: 4px;
 }
 
-.cv-refresh {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-}
 
-.cv-refresh:hover {
-  color: var(--text);
-  background: rgba(255,255,255,0.08);
-}
 
 .cv-title {
   font-size: 13px;
@@ -7837,10 +7823,18 @@ h3.cv-h, h4.cv-h { font-size: 1em; }
 .cv-send-btn:disabled { opacity: 0.3; cursor: default; }
 .cv-send-btn:not(:disabled):hover { opacity: 0.85; }
 
-/* Conversation toggle button in toolbar */
+/* Conversation toggle button in toolbar — match .btn-voice styling */
+.btn-conversation {
+  padding: 0.3rem 0.5rem;
+}
+.btn-conversation:hover {
+  color: var(--text);
+  border-color: rgba(59, 130, 246, 0.4);
+}
 .btn-conversation.active {
   color: #1a6dea;
   background: rgba(26,109,234,0.15);
+  border-color: rgba(26,109,234,0.3);
 }
 
 /* Optimistic user message (sent but not yet in transcript) */
