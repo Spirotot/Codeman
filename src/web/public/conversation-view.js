@@ -870,10 +870,10 @@ const ConversationView = (() => {
       </div>
       <div class="cv-input-bar">
         <div class="cv-slash-dropdown" id="cvSlashDropdown" style="display:none"></div>
-        <textarea class="cv-input" id="cvInput" rows="1" placeholder="Send a message…" autocomplete="off" autocorrect="on" spellcheck="true"></textarea>
         <button class="cv-stop-btn" id="cvStopBtn" onclick="ConversationView.interruptSession()" title="Stop Claude (Escape)">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
         </button>
+        <textarea class="cv-input" id="cvInput" rows="1" placeholder="Send a message…" autocomplete="off" autocorrect="on" spellcheck="true"></textarea>
         <button class="cv-send-btn" id="cvSendBtn" onclick="ConversationView.sendMessage()" title="Send" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
         </button>
