@@ -34,6 +34,7 @@ run('clean public', 'rm -rf dist/web/public');
 run('prepare dirs', 'mkdir -p dist/web dist/templates dist/web/public/vendor');
 run('copy web assets', 'cp -r src/web/public dist/web/');
 run('copy template', 'cp src/templates/case-template.md dist/templates/');
+run('copy mcp server', 'mkdir -p dist/mcp && cp src/mcp/codeman-mcp-server.mjs dist/mcp/');
 
 // 3. Vendor xterm bundles (xterm.js 6.x — @xterm scoped packages)
 run('xterm css', 'cp node_modules/@xterm/xterm/css/xterm.css dist/web/public/vendor/');
