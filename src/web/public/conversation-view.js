@@ -67,7 +67,7 @@ const ConversationView = (() => {
   // Configure marked with custom renderer to apply CV CSS classes
   const _cvMarked = new marked.Marked({
     gfm: true,
-    breaks: false,
+    breaks: true,
     renderer: {
       heading({ tokens, depth }) {
         return `<h${depth} class="cv-h">${this.parser.parseInline(tokens)}</h${depth}>\n`;
