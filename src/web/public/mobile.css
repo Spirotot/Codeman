@@ -2066,3 +2066,25 @@ html.mobile-init .file-browser-panel {
     display: block;
   }
 }
+
+/* ============================================================================
+   PWA Standalone Mode (Home Screen / display: standalone)
+   In standalone mode there's no Safari toolbar/address bar, so:
+   - The status bar overlaps content (with black-translucent)
+   - safe-area-inset-top accounts for the status bar notch
+   - safe-area-inset-bottom is smaller (no toolbar)
+   - Use 100vh / 100dvh directly since no browser chrome resizing
+   ============================================================================ */
+@media (display-mode: standalone) {
+  /* Ensure we use the full viewport without Safari chrome */
+  html, body {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Prevent pull-to-refresh / overscroll bouncing */
+  body {
+    overscroll-behavior: none;
+  }
+}

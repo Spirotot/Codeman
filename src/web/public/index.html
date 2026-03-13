@@ -6,7 +6,10 @@
   <meta name="description" content="Claude Code session manager with web interface">
   <meta name="theme-color" content="#0a0a0a">
   <meta name="google" content="notranslate">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-180.png">
   <title>Codeman</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2360a5fa'/%3E%3Cstop offset='100%25' stop-color='%233b82f6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='6' fill='%230a0a0a'/%3E%3Cpath d='M18 4L8 18h6l-2 10 10-14h-6z' fill='url(%23g)'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
@@ -21,8 +24,8 @@
   <script defer src="vendor/xterm-addon-webgl.min.js"></script>
   <script defer src="vendor/xterm-addon-unicode11.min.js"></script>
   <script defer src="vendor/xterm-zerolag-input.js"></script>
-  <!-- Synchronous mobile detection — runs before first paint to prevent panel flash -->
-  <script>if(window.innerWidth<768||(('ontouchstart' in window||navigator.maxTouchPoints>0)&&window.innerWidth<1024))document.documentElement.classList.add('mobile-init');</script>
+  <!-- Synchronous mobile + standalone detection — runs before first paint to prevent panel flash -->
+  <script>if(window.innerWidth<768||(('ontouchstart' in window||navigator.maxTouchPoints>0)&&window.innerWidth<1024))document.documentElement.classList.add('mobile-init');if(navigator.standalone||window.matchMedia('(display-mode:standalone)').matches)document.documentElement.classList.add('standalone');</script>
   <!-- Inline critical CSS for instant skeleton paint (before styles.css loads) -->
   <style>
     .loading-skeleton{display:flex;flex-direction:column;height:100vh;height:100dvh;background:#0a0a0a}
@@ -1702,6 +1705,7 @@
   <script defer src="voice-input.js"></script>
   <script defer src="notification-manager.js"></script>
   <script defer src="keyboard-accessory.js"></script>
+  <script defer src="slash-commands.js"></script>
   <script defer src="app.js"></script>
   <script defer src="conversation-view.js"></script>
   <script defer src="ralph-wizard.js"></script>

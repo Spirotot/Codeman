@@ -82,6 +82,11 @@ console.log('\n[build] content-hash cache busting');
     'api-client.js',
     'subagent-windows.js',
     'vendor/xterm-zerolag-input.js',
+    'vendor/xterm.css',
+    'vendor/xterm.min.js',
+    'vendor/xterm-addon-fit.min.js',
+    'vendor/xterm-addon-webgl.min.js',
+    'vendor/xterm-addon-unicode11.min.js',
   ];
   const manifest = {};
   for (const file of HASHABLE) {
