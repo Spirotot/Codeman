@@ -2461,6 +2461,11 @@ export class WebServer extends EventEmitter {
           try {
             const cStat = await fs.stat(candidatePath);
             if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
+            // Only consider JSONL files created after this session started (with 5s grace).
+            // Prevents new sessions from stealing old sessions' JSONL files when they share
+            // the same workingDir (e.g., all spawned from ~).
+            const sessionCreatedAt = session.createdAt || 0;
+            if (sessionCreatedAt && cStat.birthtimeMs < sessionCreatedAt - 5000) continue;
             // Verify matching cwd in first 2KB
             const fd = await fs.open(candidatePath, 'r');
             const buf = Buffer.alloc(2048);

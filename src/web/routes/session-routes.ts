@@ -928,11 +928,14 @@ export function registerSessionRoutes(
 
   /** Detect system/internal messages masquerading as user messages */
   const SYSTEM_USER_PATTERNS = [
-    /^<teammate-message\s/, // teammate/task notifications
+    /^<teammate-message\s/, // teammate notifications
+    /^<task-notification>/, // task/subagent output notifications
+    /^<local-command-caveat>/, // caveat header before local command output
     /^This session is being continued from a previous conversation/, // compaction summary
     /^<command-name>\//, // slash command (e.g. /compact)
     /^<local-command-stdout>/, // slash command output
     /^<system-reminder>/, // system reminders injected into user turns
+    /^Base directory for this skill:/, // skill invocations (global, plugin, project)
   ];
 
   interface ConversationMessage {
@@ -1123,15 +1126,20 @@ export function registerSessionRoutes(
     // No-JSONL fallback: when claudeSessionId doesn't match any JSONL file
     // (e.g., session was just created, or /resume generated a new Claude session ID
     // that hasn't been detected yet). Scan for the newest unclaimed JSONL matching
-    // the session's workingDir.
+    // the session's workingDir — but ONLY if the JSONL was created after the Codeman
+    // session started (prevents a new session from stealing an old session's history).
     if (!jsonlPath && session?.workingDir) {
       try {
+        // Claim both codeman IDs and Claude session IDs — Claude uses --session-id <codeman-id>
+        // so JSONL files are often named after the codeman session ID, not a separate Claude ID.
         const claimedByOthers = new Set<string>();
         for (const [otherId, otherSession] of ctx.sessions) {
           if (otherId === id) continue;
+          claimedByOthers.add(otherId);
           if (otherSession.claudeSessionId) claimedByOthers.add(otherSession.claudeSessionId);
         }
 
+        const sessionCreatedAt = session.createdAt || 0;
         const projectDirs = await fs.readdir(projectsDir);
         let bestPath: string | null = null;
         let bestMtime = 0;
@@ -1153,12 +1161,17 @@ export function registerSessionRoutes(
             try {
               const cStat = await fs.stat(candidatePath);
               if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
-              // Verify matching cwd in first 2KB of file
+              // Only consider JSONL files created after this session started (with 5s grace)
+              if (cStat.birthtimeMs < sessionCreatedAt - 5000) continue;
+              // Verify matching cwd and real conversation content (not just hook artifacts)
               const fd = await fs.open(candidatePath, 'r');
-              const buf = Buffer.alloc(2048);
-              await fd.read(buf, 0, 2048, 0);
+              const buf = Buffer.alloc(8192);
+              const { bytesRead } = await fd.read(buf, 0, 8192, 0);
               await fd.close();
-              if (!buf.toString('utf-8').includes(`"cwd":"${session.workingDir}"`)) continue;
+              const head = buf.toString('utf-8', 0, bytesRead);
+              if (!head.includes(`"cwd":"${session.workingDir}"`)) continue;
+              // Must have at least one assistant message — filters out hook/command artifacts
+              if (!head.includes('"type":"assistant"')) continue;
               bestPath = candidatePath;
               bestMtime = cStat.mtimeMs;
             } catch {
@@ -1192,10 +1205,11 @@ export function registerSessionRoutes(
           const projDir = dirname(jsonlPath);
           const files = await fs.readdir(projDir);
 
-          // Build set of Claude session IDs claimed by OTHER sessions
+          // Claim both codeman IDs and Claude session IDs (see no-JSONL fallback comment)
           const claimedByOthers = new Set<string>();
           for (const [otherId, otherSession] of ctx.sessions) {
             if (otherId === id) continue;
+            claimedByOthers.add(otherId);
             if (otherSession.claudeSessionId) claimedByOthers.add(otherSession.claudeSessionId);
           }
 
@@ -1216,6 +1230,10 @@ export function registerSessionRoutes(
               if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
               // Must have been CREATED after old JSONL went stale (not a pre-existing session)
               if (cStat.birthtimeMs < jsonlStat.mtimeMs - 60_000) continue;
+              // Must be recently active (written to in last 60s) — this filters out
+              // stale artifacts from quick commands like /para:next or /reload-plugins
+              // that create tiny JSONL files and then stop writing.
+              if (Date.now() - cStat.mtimeMs > 60_000) continue;
               // Verify matching cwd
               if (sessionCwd) {
                 const fd = await fs.open(candidatePath, 'r');

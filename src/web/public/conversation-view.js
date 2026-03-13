@@ -11,26 +11,12 @@
 const ConversationView = (() => {
   /** @type {HTMLElement|null} */
   let panel = null;
-  /** @type {HTMLElement|null} */
-  let messagesContainer = null;
   /** @type {string|null} */
   let currentSessionId = null;
   /** @type {boolean} */
   let isOpen = false;
   /** @type {boolean} */
   let isLoading = false;
-  /** @type {boolean} */
-  let hasMore = false;
-  /** @type {number|null} Oldest message index loaded (for pagination cursor) */
-  let oldestIndex = null;
-  /** @type {number} */
-  let totalMessages = 0;
-  /** @type {Set<string>} Expanded tool call IDs */
-  const expandedTools = new Set();
-  /** @type {Set<number>} Expanded thinking block indices */
-  const expandedThinking = new Set();
-  /** @type {Map<string, object>} Message data keyed by tool-use ID or index, for expand rendering */
-  const msgDataStore = new Map();
   /** @type {number|null} Auto-refresh interval ID */
   let refreshTimer = null;
   /** @type {HTMLElement|null} Typing indicator element */
@@ -39,6 +25,36 @@ const ConversationView = (() => {
   let sessionBusy = false;
   /** @type {Map<string, string>} Draft input text per session — preserved across tab switches */
   const draftTextMap = new Map();
+
+  // ─── Per-session DOM cache ─────────────────────────────────
+  // Each session gets its own messages container + pagination state.
+  // Tab switching hides/shows cached containers — no re-fetch, no rebuild,
+  // scroll position naturally preserved.
+
+  /** @type {Map<string, {el: HTMLElement, oldestIndex: number|null, newestIndex: number, totalMessages: number, hasMore: boolean, expandedTools: Set<string>, expandedThinking: Set<number>, expandedSystem: Set<number>, msgDataStore: Map<string, object>, savedScrollTop: number}>} */
+  const sessionCache = new Map();
+
+  /** Get or create the cache entry for a session */
+  function getCache(sessionId) {
+    let c = sessionCache.get(sessionId);
+    if (!c) {
+      const el = document.createElement('div');
+      el.className = 'cv-messages';
+      el.id = 'cvMessages-' + sessionId;
+      el.style.display = 'none';
+      c = { el, oldestIndex: null, newestIndex: 0, totalMessages: 0, hasMore: false, expandedTools: new Set(), expandedThinking: new Set(), expandedSystem: new Set(), msgDataStore: new Map(), savedScrollTop: -1 };
+      sessionCache.set(sessionId, c);
+    }
+    return c;
+  }
+
+  /** @type {HTMLElement|null} Points to the active session's cached messages container */
+  let messagesContainer = null;
+
+  /** Shorthand to get the active cache entry */
+  function activeCache() {
+    return currentSessionId ? sessionCache.get(currentSessionId) : null;
+  }
 
   const PAGE_SIZE = 80;
 
@@ -165,7 +181,8 @@ const ConversationView = (() => {
     let pendingList = []; // accumulated list items
     let pendingTable = []; // accumulated table lines
 
-    for (const line of lines) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
       // Code block fence
       if (line.trimStart().startsWith('```')) {
         flushList(pendingList, html);
@@ -217,17 +234,29 @@ const ConversationView = (() => {
         pendingList.push({ ordered: true, indent, text: line.replace(/^\s*\d+\.\s/, '') });
         continue;
       }
+      // Empty line — if a list is pending, swallow blank lines that are followed
+      // by more list items (loose list style). Without this, each item separated
+      // by a blank line gets its own <ol>, resetting the counter to 1 every time.
+      if (!line.trim()) {
+        if (pendingList.length > 0) {
+          let nextIsListItem = false;
+          for (let look = li + 1; look < lines.length; look++) {
+            if (!lines[look].trim()) continue;
+            nextIsListItem = /^\s*[-*]\s/.test(lines[look]) || /^\s*\d+\.\s/.test(lines[look]);
+            break;
+          }
+          if (nextIsListItem) continue;
+          flushList(pendingList, html);
+        }
+        html.push('<div class="cv-spacer"></div>');
+        continue;
+      }
+
       if (pendingList.length > 0) flushList(pendingList, html);
 
       // Horizontal rule
       if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
         html.push('<hr class="cv-hr">');
-        continue;
-      }
-
-      // Empty line
-      if (!line.trim()) {
-        html.push('<div class="cv-spacer"></div>');
         continue;
       }
 
@@ -308,12 +337,31 @@ const ConversationView = (() => {
     return icons[toolName] || '🔧';
   }
 
+  /** Derive a short label for collapsed system messages */
+  function systemLabel(content) {
+    if (!content) return 'System';
+    if (content.startsWith('Base directory for this skill:')) {
+      const match = content.match(/skills\/([^/\n]+)/);
+      return match ? `Skill: ${match[1]}` : 'Skill';
+    }
+    if (content.startsWith('<command-name>/')) return 'Command';
+    if (content.startsWith('<local-command-stdout>')) return 'Command output';
+    if (content.startsWith('This session is being continued')) return 'Compaction summary';
+    if (content.startsWith('<system-reminder>')) return 'System reminder';
+    if (content.startsWith('<teammate-message')) return 'Teammate';
+    if (content.startsWith('<task-notification>')) return 'Task notification';
+    return 'System';
+  }
+
   // ─── Message Rendering ──────────────────────────────────────
 
-  function renderMessage(msg) {
-    // Store data for later expand
+  function renderMessage(msg, cache) {
+    // Store data for later expand — use the explicitly-passed cache so that
+    // async callers (loadMessages, fetchNewMessages) route to the correct
+    // session even if currentSessionId has changed since the fetch started.
+    if (cache === undefined) cache = activeCache();
     const storeKey = msg.toolUseId || `msg-${msg.index}`;
-    msgDataStore.set(storeKey, msg);
+    if (cache) cache.msgDataStore.set(storeKey, msg);
 
     switch (msg.type) {
       case 'user':
@@ -322,11 +370,19 @@ const ConversationView = (() => {
           <div class="cv-msg-body">${renderMarkdown(msg.content)}</div>
         </div>`;
 
-      case 'system':
-        return `<div class="cv-msg cv-system">
-          <div class="cv-msg-label">System</div>
-          <div class="cv-msg-body">${renderMarkdown(msg.content)}</div>
+      case 'system': {
+        const isExpanded = cache ? cache.expandedSystem.has(msg.index) : false;
+        const sysLabel = systemLabel(msg.content);
+        const preview = (msg.content || '').replace(/^Base directory for this skill:[^\n]*\n+(?:#[^\n]*\n+)?/, '').slice(0, 80).replace(/\n/g, ' ');
+        return `<div class="cv-msg cv-system ${isExpanded ? 'expanded' : ''}" data-index="${msg.index}" data-key="${escapeHtml(storeKey)}">
+          <div class="cv-system-toggle" onclick="ConversationView.toggleSystem(${msg.index})">
+            <span class="cv-chevron">${isExpanded ? '▾' : '▸'}</span>
+            <span class="cv-system-label">${escapeHtml(sysLabel)}</span>
+            ${!isExpanded ? `<span class="cv-system-preview">${escapeHtml(preview)}${preview.length >= 80 ? '…' : ''}</span>` : ''}
+          </div>
+          ${isExpanded ? `<div class="cv-system-content">${renderMarkdown(msg.content)}</div>` : ''}
         </div>`;
+      }
 
       case 'assistant':
         return `<div class="cv-msg cv-assistant">
@@ -334,7 +390,7 @@ const ConversationView = (() => {
         </div>`;
 
       case 'thinking': {
-        const isExpanded = expandedThinking.has(msg.index);
+        const isExpanded = cache ? cache.expandedThinking.has(msg.index) : false;
         const preview = (msg.content || '').slice(0, 80).replace(/\n/g, ' ');
         return `<div class="cv-msg cv-thinking ${isExpanded ? 'expanded' : ''}" data-index="${msg.index}" data-key="${escapeHtml(storeKey)}">
           <div class="cv-thinking-toggle" onclick="ConversationView.toggleThinking(${msg.index})">
@@ -348,7 +404,7 @@ const ConversationView = (() => {
 
       case 'tool_use': {
         const id = msg.toolUseId || `tool-${msg.index}`;
-        const isExpanded = expandedTools.has(id);
+        const isExpanded = cache ? cache.expandedTools.has(id) : false;
         const summary = formatToolInput(msg.toolName, msg.toolInput);
         const isAgent = msg.toolName === 'Agent';
         return `<div class="cv-msg cv-tool ${isExpanded ? 'expanded' : ''} ${isAgent ? 'cv-agent' : ''}" data-tool-id="${escapeHtml(id)}">
@@ -365,7 +421,7 @@ const ConversationView = (() => {
 
       case 'tool_result': {
         const id = msg.toolUseId || `result-${msg.index}`;
-        const isExpanded = expandedTools.has(id);
+        const isExpanded = cache ? cache.expandedTools.has(id) : false;
         if (!msg.content || !msg.content.trim()) return ''; // Skip empty results
         const preview = msg.content.split('\n')[0].slice(0, 80);
         const lineCount = msg.content.split('\n').length;
@@ -393,9 +449,10 @@ const ConversationView = (() => {
     if (isLoading) return;
     isLoading = true;
 
+    const cache = getCache(sessionId);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
-    if (append && oldestIndex !== null) {
-      params.set('before', String(oldestIndex));
+    if (append && cache.oldestIndex !== null) {
+      params.set('before', String(cache.oldestIndex));
     }
 
     try {
@@ -403,79 +460,82 @@ const ConversationView = (() => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      totalMessages = data.total;
-      hasMore = data.hasMore;
+      cache.totalMessages = data.total;
+      cache.hasMore = data.hasMore;
 
       // Messages come newest-first from API
       const msgs = data.messages || [];
       if (msgs.length > 0) {
-        oldestIndex = msgs[msgs.length - 1].index;
-        if (msgs[0].index > newestIndex) newestIndex = msgs[0].index;
+        cache.oldestIndex = msgs[msgs.length - 1].index;
+        if (msgs[0].index > cache.newestIndex) cache.newestIndex = msgs[0].index;
       }
 
-      if (append && messagesContainer) {
+      // Guard: if the user switched sessions while the fetch was in-flight,
+      // the module-level messagesContainer now points to a different session.
+      // Only mutate the DOM if it still belongs to this fetch's session.
+      const targetContainer = cache.el;
+      if (append && targetContainer.parentNode) {
         // Prepend older messages at the top
-        const scrollBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop;
+        const scrollBottom = targetContainer.scrollHeight - targetContainer.scrollTop;
         const frag = document.createDocumentFragment();
-        const wrapper = document.createElement('div');
-        // Render in reverse so oldest is at top
         for (let i = msgs.length - 1; i >= 0; i--) {
-          const html = renderMessage(msgs[i]);
+          const html = renderMessage(msgs[i], cache);
           if (html) {
             const div = document.createElement('div');
             div.innerHTML = html;
             frag.appendChild(div.firstElementChild);
           }
         }
-        // Insert load-more button replacement
-        const existingBtn = messagesContainer.querySelector('.cv-load-more');
+        const existingBtn = targetContainer.querySelector('.cv-load-more');
         if (existingBtn) existingBtn.remove();
-        if (hasMore) {
+        if (cache.hasMore) {
           const loadMoreBtn = document.createElement('button');
           loadMoreBtn.className = 'cv-load-more';
-          loadMoreBtn.textContent = `Load older messages (${totalMessages - msgs.length} remaining)`;
+          loadMoreBtn.textContent = `Load older messages (${cache.totalMessages - msgs.length} remaining)`;
           loadMoreBtn.onclick = () => loadMessages(sessionId, true);
-          messagesContainer.prepend(loadMoreBtn);
+          targetContainer.prepend(loadMoreBtn);
         }
-        messagesContainer.prepend(frag);
-        // Restore scroll position
-        messagesContainer.scrollTop = messagesContainer.scrollHeight - scrollBottom;
+        targetContainer.prepend(frag);
+        targetContainer.scrollTop = targetContainer.scrollHeight - scrollBottom;
       } else {
-        renderAll(msgs);
+        renderAll(msgs, cache);
       }
 
       updateHeader();
       syncTypingIndicator();
       syncStopButton();
+
+      // Scroll to bottom after initial load — instant, not smooth
+      if (!append && targetContainer.parentNode) {
+        targetContainer.style.scrollBehavior = 'auto';
+        targetContainer.scrollTop = targetContainer.scrollHeight;
+        requestAnimationFrame(() => {
+          targetContainer.scrollTop = targetContainer.scrollHeight;
+          targetContainer.style.scrollBehavior = '';
+        });
+      }
     } catch (err) {
       console.error('[ConversationView] Failed to load messages:', err);
-      if (messagesContainer) {
-        messagesContainer.innerHTML = `<div class="cv-error-msg">Failed to load conversation: ${escapeHtml(String(err))}</div>`;
+      if (cache.el.parentNode) {
+        cache.el.innerHTML = `<div class="cv-error-msg">Failed to load conversation: ${escapeHtml(String(err))}</div>`;
       }
     } finally {
       isLoading = false;
     }
   }
 
-  /** Scroll the messages container to the bottom (newest messages visible).
-   *  Uses rAF to ensure browser layout has settled after DOM mutations —
-   *  critical on mobile Safari where synchronous scrollTop after bulk
-   *  insertion is unreliable. */
-  function scrollToBottom() {
-    if (!messagesContainer) return;
-    // Immediate attempt (works on most desktop browsers)
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    // Deferred attempt after layout pass (needed on mobile Safari)
-    requestAnimationFrame(() => {
-      if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    });
+  /** Check if user is near the bottom of the messages container */
+  function isNearBottom() {
+    if (!messagesContainer) return true;
+    const dist = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight;
+    return dist < 80;
   }
 
-  function renderAll(msgs) {
+  function renderAll(msgs, cache) {
     if (!messagesContainer) return;
     messagesContainer.innerHTML = '';
 
-    if (hasMore) {
+    if (cache && cache.hasMore) {
       const loadMoreBtn = document.createElement('button');
       loadMoreBtn.className = 'cv-load-more';
       loadMoreBtn.textContent = 'Load older messages…';
@@ -485,7 +545,7 @@ const ConversationView = (() => {
 
     // Render in chronological order (API returns newest-first, so reverse)
     for (let i = msgs.length - 1; i >= 0; i--) {
-      const html = renderMessage(msgs[i]);
+      const html = renderMessage(msgs[i], cache);
       if (html) {
         const div = document.createElement('div');
         div.innerHTML = html;
@@ -493,52 +553,31 @@ const ConversationView = (() => {
       }
     }
 
-    // Scroll to bottom (newest) — use rAF to ensure layout has settled
-    // after bulk DOM insertion (especially important on mobile Safari).
-    scrollToBottom();
-
-    // Auto-expand subagent conversations
     autoExpandSubagents();
   }
 
-  /** Auto-expand subagent conversations that haven't been loaded yet.
-   *  After all subagent threads load, scroll to bottom so newest messages
-   *  remain visible (subagent content adds height after initial scroll). */
+  /** Auto-expand subagent conversations that haven't been loaded yet. */
   function autoExpandSubagents() {
     if (!messagesContainer) return;
     const btns = messagesContainer.querySelectorAll('.cv-subagent-btn');
-    const loadPromises = [];
     btns.forEach((btn) => {
-      // Only auto-load if no thread has been loaded yet
       const parent = btn.closest('.cv-agent-result');
       if (parent && !parent.querySelector('.cv-subagent-thread')) {
         const agentId = btn.dataset.agentId;
         if (agentId) {
-          // Use a short delay to avoid blocking the initial render
-          const p = new Promise((resolve) => {
-            setTimeout(() => {
-              ConversationView.loadSubagent(agentId, btn).then(resolve, resolve);
-            }, 50);
-          });
-          loadPromises.push(p);
+          setTimeout(() => ConversationView.loadSubagent(agentId, btn), 50);
         }
       }
     });
-    // After all subagent threads load, re-scroll to bottom
-    if (loadPromises.length > 0) {
-      Promise.all(loadPromises).then(() => scrollToBottom());
-    }
   }
 
   function updateHeader() {
+    const cache = activeCache();
     const countEl = panel?.querySelector('.cv-count');
     if (countEl) {
-      countEl.textContent = `${totalMessages} messages`;
+      countEl.textContent = `${cache ? cache.totalMessages : 0} messages`;
     }
   }
-
-  /** @type {number} Newest message index we've seen */
-  let newestIndex = 0;
 
   /** Debounce timer for SSE-triggered refresh */
   let refreshDebounce = null;
@@ -546,37 +585,49 @@ const ConversationView = (() => {
   /** Fetch and append new messages since our last known index */
   async function fetchNewMessages() {
     if (!isOpen || !currentSessionId || isLoading) return;
+    // Snapshot session identity and container BEFORE the async fetch.
+    // If the user switches sessions while the request is in-flight these
+    // captures let us detect staleness and bail out instead of corrupting
+    // the newly-active session's view.
+    const fetchSessionId = currentSessionId;
+    const cache = activeCache();
+    if (!cache) return;
+    const targetContainer = cache.el;
     try {
-      const res = await fetch(`/api/sessions/${currentSessionId}/conversation?limit=20`);
+      const res = await fetch(`/api/sessions/${fetchSessionId}/conversation?limit=20`);
       if (!res.ok) return;
+      // Guard: session changed while we were waiting for the response.
+      if (currentSessionId !== fetchSessionId) return;
       const data = await res.json();
-      if (data.total > totalMessages) {
-        const newMsgs = (data.messages || []).filter((m) => m.index > newestIndex);
-        if (newMsgs.length > 0 && messagesContainer) {
-          const wasAtBottom =
-            messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 50;
+      if (data.total > cache.totalMessages) {
+        const newMsgs = (data.messages || []).filter((m) => m.index > cache.newestIndex);
+        if (newMsgs.length > 0 && targetContainer.parentNode) {
+          const wasAtBottom = isNearBottom();
           for (let i = newMsgs.length - 1; i >= 0; i--) {
-            const html = renderMessage(newMsgs[i]);
+            const html = renderMessage(newMsgs[i], cache);
             if (html) {
               const div = document.createElement('div');
               div.innerHTML = html;
-              // Insert before typing indicator if visible, else append
-              if (typingIndicator && typingIndicator.parentNode === messagesContainer) {
-                messagesContainer.insertBefore(div.firstElementChild, typingIndicator);
+              if (typingIndicator && typingIndicator.parentNode === targetContainer) {
+                targetContainer.insertBefore(div.firstElementChild, typingIndicator);
               } else {
-                messagesContainer.appendChild(div.firstElementChild);
+                targetContainer.appendChild(div.firstElementChild);
               }
             }
-            if (newMsgs[i].index > newestIndex) newestIndex = newMsgs[i].index;
+            if (newMsgs[i].index > cache.newestIndex) cache.newestIndex = newMsgs[i].index;
           }
-          totalMessages = data.total;
+          cache.totalMessages = data.total;
           updateHeader();
-          if (wasAtBottom) {
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-          }
           autoExpandSubagents();
+          if (wasAtBottom) {
+            targetContainer.scrollTop = targetContainer.scrollHeight;
+          }
         }
       }
+      // Sync typing indicator + stop button on every poll — more reliable than
+      // relying solely on SSE events which can be missed or arrive out of order.
+      syncTypingIndicator();
+      syncStopButton();
     } catch {
       /* ignore fetch errors */
     }
@@ -626,14 +677,6 @@ const ConversationView = (() => {
       messagesContainer.appendChild(typingIndicator);
     }
     typingIndicator.classList.add('cv-typing-visible');
-    // Auto-scroll if user is near the bottom
-    const wasAtBottom =
-      messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 80;
-    if (wasAtBottom) {
-      requestAnimationFrame(() => {
-        if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
-      });
-    }
   }
 
   /** Hide the typing indicator */
@@ -787,8 +830,13 @@ const ConversationView = (() => {
           </button>
         </div>
       </div>
-      <div class="cv-messages" id="cvMessages"></div>
+      <div class="cv-messages-wrapper" id="cvMessagesWrapper">
+        <button class="cv-scroll-bottom" id="cvScrollBottom" onclick="ConversationView.scrollToBottom()" title="Scroll to bottom" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      </div>
       <div class="cv-input-bar">
+        <div class="cv-slash-dropdown" id="cvSlashDropdown" style="display:none"></div>
         <textarea class="cv-input" id="cvInput" rows="1" placeholder="Send a message…" autocomplete="off" autocorrect="on" spellcheck="true"></textarea>
         <button class="cv-send-btn" id="cvSendBtn" onclick="ConversationView.sendMessage()" title="Send" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
@@ -804,22 +852,109 @@ const ConversationView = (() => {
       document.body.appendChild(panel);
     }
 
-    messagesContainer = panel.querySelector('#cvMessages');
+    // messagesContainer is set per-session in open() via sessionCache
 
     // Wire up the input bar
     const input = panel.querySelector('#cvInput');
     const sendBtn = panel.querySelector('#cvSendBtn');
+    const slashDropdown = panel.querySelector('#cvSlashDropdown');
+    let slashSelectedIndex = 0;
+    let slashResults = [];
+
+    function updateSlashDropdown() {
+      const text = input.value;
+      // Show dropdown when text is just a slash command prefix (no spaces = still typing the command)
+      const slashMatch = text.match(/^\/(\S*)$/);
+      if (!slashMatch || typeof SlashCommands === 'undefined') {
+        slashDropdown.style.display = 'none';
+        slashResults = [];
+        return;
+      }
+      slashResults = SlashCommands.match('/' + slashMatch[1], 12);
+      if (slashResults.length === 0) {
+        slashDropdown.style.display = 'none';
+        return;
+      }
+      slashSelectedIndex = Math.min(slashSelectedIndex, slashResults.length - 1);
+      slashDropdown.innerHTML = slashResults.map((cmd, i) =>
+        `<div class="cv-slash-item${i === slashSelectedIndex ? ' selected' : ''}" data-index="${i}">` +
+        `<span class="cv-slash-name">${cmd.name}</span>` +
+        `<span class="cv-slash-desc">${cmd.desc}</span>` +
+        `</div>`
+      ).join('');
+      slashDropdown.style.display = '';
+    }
+
+    function acceptSlashCompletion() {
+      if (!slashResults.length) return false;
+      const cmd = slashResults[slashSelectedIndex];
+      if (cmd) {
+        input.value = cmd.name + ' ';
+        input.dispatchEvent(new Event('input'));
+        slashDropdown.style.display = 'none';
+        slashResults = [];
+      }
+      return true;
+    }
+
     if (input) {
-      // Auto-grow textarea
+      // Auto-grow textarea — keep messages scrolled to bottom when input bar grows.
+      // Avoid setting height='auto' first (causes layout reflow jitter in flex containers).
+      // Instead, temporarily hide overflow, shrink to 0 to measure scrollHeight, then set
+      // the final height — the browser batches the writes into a single paint.
+      let lastInputHeight = 0;
       input.addEventListener('input', () => {
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+        const wasNearBottom = isNearBottom();
+        // Hide overflow during measurement so content doesn't flash at height:0
+        input.style.overflow = 'hidden';
+        input.style.height = '0';
+        const target = Math.min(input.scrollHeight, 120);
+        input.style.height = target + 'px';
+        // Restore scroll when content exceeds max-height
+        input.style.overflow = input.scrollHeight > 120 ? 'auto' : 'hidden';
+        const heightChanged = target !== lastInputHeight;
+        lastInputHeight = target;
         sendBtn.disabled = !input.value.trim();
         input.classList.toggle('cv-input-multiline', input.value.includes('\n'));
+        updateSlashDropdown();
+        if (heightChanged && wasNearBottom && messagesContainer) {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
       });
-      // Send on Enter (without Shift) — desktop only.
-      // On mobile, Enter inserts a newline; the send button is the only way to send.
+      // Keyboard navigation for slash dropdown + send on Enter
       input.addEventListener('keydown', (e) => {
+        // Slash dropdown navigation
+        if (slashResults.length > 0 && slashDropdown.style.display !== 'none') {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            slashSelectedIndex = (slashSelectedIndex + 1) % slashResults.length;
+            updateSlashDropdown();
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            slashSelectedIndex = (slashSelectedIndex - 1 + slashResults.length) % slashResults.length;
+            updateSlashDropdown();
+            return;
+          }
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            acceptSlashCompletion();
+            return;
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            slashDropdown.style.display = 'none';
+            slashResults = [];
+            return;
+          }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            acceptSlashCompletion();
+            return;
+          }
+        }
+        // Normal Enter = send (desktop only)
         if (e.key === 'Enter' && !e.shiftKey) {
           const isMobile =
             typeof MobileDetection !== 'undefined' && MobileDetection.isTouchDevice() && window.innerWidth < 1024;
@@ -829,6 +964,33 @@ const ConversationView = (() => {
           }
         }
       });
+      // Click to select from dropdown
+      if (slashDropdown) {
+        slashDropdown.addEventListener('mousedown', (e) => {
+          const item = e.target.closest('.cv-slash-item');
+          if (item) {
+            e.preventDefault(); // keep focus on textarea
+            slashSelectedIndex = parseInt(item.dataset.index, 10) || 0;
+            acceptSlashCompletion();
+          }
+        });
+      }
+      // Load custom commands on focus (reloads when session changes for project commands)
+      input.addEventListener('focus', () => {
+        if (typeof SlashCommands !== 'undefined') SlashCommands.loadCustomCommands(currentSessionId);
+      });
+    }
+
+    // Show/hide the scroll-to-bottom button based on scroll position.
+    // Uses event delegation on the wrapper — each per-session .cv-messages container
+    // fires scroll events that bubble to the wrapper.
+    const scrollBtn = panel.querySelector('#cvScrollBottom');
+    const wrapper = panel.querySelector('#cvMessagesWrapper');
+    if (wrapper && scrollBtn) {
+      wrapper.addEventListener('scroll', () => {
+        if (!messagesContainer) return;
+        scrollBtn.style.display = isNearBottom() ? 'none' : '';
+      }, true); // capture phase so we hear scroll on child elements
     }
 
     // Adjust panel when iOS keyboard opens/closes so the input bar stays visible.
@@ -897,8 +1059,11 @@ const ConversationView = (() => {
     if (!input) return;
     const draft = (sessionId && draftTextMap.get(sessionId)) || '';
     input.value = draft;
-    input.style.height = 'auto';
-    if (draft) input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    input.style.overflow = 'hidden';
+    input.style.height = '0';
+    const h = Math.min(input.scrollHeight, 120);
+    input.style.height = h + 'px';
+    input.style.overflow = input.scrollHeight > 120 ? 'auto' : 'hidden';
     if (sendBtn) sendBtn.disabled = !draft.trim();
     input.classList.toggle('cv-input-multiline', draft.includes('\n'));
   }
@@ -912,19 +1077,35 @@ const ConversationView = (() => {
 
       ensurePanel();
 
-      // Save draft text for the outgoing session before switching
-      if (currentSessionId && currentSessionId !== sessionId) {
+      // Always save draft text for the current session before switching or re-opening.
+      // Without this, re-opening the same session (e.g. clicking its tab again) would
+      // skip the save but restoreDraft would read the stale/empty map entry, clearing input.
+      if (currentSessionId) {
         saveDraft(currentSessionId);
       }
 
+      // Hide the previous session's messages container — save scroll position first
+      // (display:none resets scrollTop to 0)
+      const prevCache = currentSessionId ? sessionCache.get(currentSessionId) : null;
+      if (prevCache) {
+        prevCache.savedScrollTop = prevCache.el.scrollTop;
+        prevCache.el.style.display = 'none';
+      }
+
       currentSessionId = sessionId;
-      oldestIndex = null;
-      newestIndex = 0;
-      hasMore = false;
-      expandedTools.clear();
-      expandedThinking.clear();
-      msgDataStore.clear();
       isOpen = true;
+      if (typeof SlashCommands !== 'undefined') SlashCommands.invalidate();
+
+      // Get or create this session's cached container
+      const cache = getCache(sessionId);
+      messagesContainer = cache.el;
+
+      // Attach to the wrapper if not already in the DOM
+      const wrapper = panel.querySelector('#cvMessagesWrapper');
+      if (wrapper && !messagesContainer.parentNode) {
+        wrapper.appendChild(messagesContainer);
+      }
+      messagesContainer.style.display = '';
 
       // Hide terminal, show conversation. On mobile, also hide the toolbar
       // (position:fixed at bottom) to prevent it from covering the input bar.
@@ -936,12 +1117,26 @@ const ConversationView = (() => {
       if (termContainer) termContainer.style.display = 'none';
       if (welcome) welcome.style.display = 'none';
       if (toolbar && isMobile) toolbar.style.display = 'none';
-      // Hide keyboard accessory bar (it's for terminal input, not conversation input)
       const accessory = document.querySelector('.keyboard-accessory-bar');
       if (accessory && isMobile) accessory.style.display = 'none';
       panel.style.display = 'flex';
 
-      loadMessages(sessionId, false);
+      // First open: fetch all messages. Subsequent: restore scroll + fetch new.
+      if (cache.totalMessages === 0) {
+        loadMessages(sessionId, false);
+      } else {
+        updateHeader();
+        // Restore scroll position that was saved before hiding (display:none resets it).
+        // Temporarily disable smooth scrolling so restore is instant.
+        if (cache.savedScrollTop >= 0) {
+          messagesContainer.style.scrollBehavior = 'auto';
+          messagesContainer.scrollTop = cache.savedScrollTop;
+          cache.savedScrollTop = -1;
+          messagesContainer.style.scrollBehavior = '';
+        }
+        // Fetch any new messages that arrived while this tab was hidden
+        fetchNewMessages();
+      }
       startAutoRefresh();
 
       // Restore any saved draft text for the incoming session
@@ -1023,6 +1218,25 @@ const ConversationView = (() => {
       return isOpen;
     },
 
+    scrollToBottom() {
+      if (!messagesContainer) return;
+      const distance = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight;
+      // Smooth for short distances, instant for long jumps
+      if (distance < 2000) {
+        messagesContainer.style.scrollBehavior = 'smooth';
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        setTimeout(() => {
+          if (messagesContainer) messagesContainer.style.scrollBehavior = '';
+        }, 400);
+      } else {
+        messagesContainer.style.scrollBehavior = 'auto';
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        messagesContainer.style.scrollBehavior = '';
+      }
+      const scrollBtn = panel?.querySelector('#cvScrollBottom');
+      if (scrollBtn) scrollBtn.style.display = 'none';
+    },
+
     /** Send a message to the active session via the input API */
     async sendMessage() {
       const input = panel?.querySelector('#cvInput');
@@ -1044,16 +1258,27 @@ const ConversationView = (() => {
         });
 
         if (res.ok) {
-          // Optimistically render the user message immediately
+          // Optimistically render the user message immediately, then bump
+          // newestIndex so fetchNewMessages doesn't duplicate it when the
+          // server-side copy arrives.  We advance newestIndex by 1 beyond
+          // the current highest known index; the real server index will be
+          // ≥ that, so the duplicate check (m.index > cache.newestIndex)
+          // correctly skips this message until a genuinely newer one appears.
           if (messagesContainer) {
             const div = document.createElement('div');
             div.className = 'cv-msg cv-user';
             div.innerHTML = `<div class="cv-msg-label">You</div><div class="cv-msg-body">${renderMarkdown(text)}</div>`;
             messagesContainer.appendChild(div);
+            const sendCache = activeCache();
+            if (sendCache) {
+              sendCache.newestIndex = sendCache.newestIndex + 1;
+              sendCache.totalMessages = sendCache.totalMessages + 1;
+            }
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
           }
           input.value = '';
-          input.style.height = 'auto';
+          input.style.overflow = 'hidden';
+          input.style.height = '';
           draftTextMap.delete(currentSessionId);
         } else {
           console.error('[ConversationView] Send failed:', res.status);
@@ -1090,8 +1315,14 @@ const ConversationView = (() => {
 
     refresh() {
       if (!currentSessionId) return;
-      oldestIndex = null;
-      hasMore = false;
+      const cache = activeCache();
+      if (cache) {
+        cache.oldestIndex = null;
+        cache.newestIndex = 0;
+        cache.totalMessages = 0;
+        cache.hasMore = false;
+        cache.el.innerHTML = '';
+      }
       loadMessages(currentSessionId, false);
     },
 
@@ -1103,15 +1334,17 @@ const ConversationView = (() => {
     },
 
     toggleTool(toolId) {
-      const isNowExpanded = !expandedTools.has(toolId);
+      const cache = activeCache();
+      if (!cache) return;
+      const isNowExpanded = !cache.expandedTools.has(toolId);
       if (isNowExpanded) {
-        expandedTools.add(toolId);
+        cache.expandedTools.add(toolId);
       } else {
-        expandedTools.delete(toolId);
+        cache.expandedTools.delete(toolId);
       }
       if (!messagesContainer) return;
       const els = messagesContainer.querySelectorAll(`[data-tool-id="${CSS.escape(toolId)}"]`);
-      const storedMsg = msgDataStore.get(toolId);
+      const storedMsg = cache.msgDataStore.get(toolId);
 
       els.forEach((el) => {
         const chevron = el.querySelector('.cv-chevron');
@@ -1193,11 +1426,13 @@ const ConversationView = (() => {
     },
 
     toggleThinking(index) {
-      const isNowExpanded = !expandedThinking.has(index);
+      const cache = activeCache();
+      if (!cache) return;
+      const isNowExpanded = !cache.expandedThinking.has(index);
       if (isNowExpanded) {
-        expandedThinking.add(index);
+        cache.expandedThinking.add(index);
       } else {
-        expandedThinking.delete(index);
+        cache.expandedThinking.delete(index);
       }
       if (!messagesContainer) return;
       const el = messagesContainer.querySelector(`[data-index="${index}"]`);
@@ -1205,7 +1440,7 @@ const ConversationView = (() => {
       const chevron = el.querySelector('.cv-chevron');
       const preview = el.querySelector('.cv-thinking-preview');
       const storeKey = el.dataset.key || `msg-${index}`;
-      const storedMsg = msgDataStore.get(storeKey);
+      const storedMsg = cache.msgDataStore.get(storeKey);
 
       if (isNowExpanded) {
         el.classList.add('expanded');
@@ -1224,6 +1459,52 @@ const ConversationView = (() => {
         const content = el.querySelector('.cv-thinking-content');
         if (content) content.remove();
       }
+    },
+
+    toggleSystem(index) {
+      const cache = activeCache();
+      if (!cache) return;
+      const isNowExpanded = !cache.expandedSystem.has(index);
+      if (isNowExpanded) {
+        cache.expandedSystem.add(index);
+      } else {
+        cache.expandedSystem.delete(index);
+      }
+      if (!messagesContainer) return;
+      const el = messagesContainer.querySelector(`.cv-system[data-index="${index}"]`);
+      if (!el) return;
+      const chevron = el.querySelector('.cv-chevron');
+      const preview = el.querySelector('.cv-system-preview');
+      const storeKey = el.dataset.key || `msg-${index}`;
+      const storedMsg = cache.msgDataStore.get(storeKey);
+
+      if (isNowExpanded) {
+        el.classList.add('expanded');
+        if (chevron) chevron.textContent = '▾';
+        if (preview) preview.style.display = 'none';
+        if (!el.querySelector('.cv-system-content') && storedMsg?.content) {
+          const d = document.createElement('div');
+          d.className = 'cv-system-content';
+          d.innerHTML = renderMarkdown(storedMsg.content);
+          el.appendChild(d);
+        }
+      } else {
+        el.classList.remove('expanded');
+        if (chevron) chevron.textContent = '▸';
+        if (preview) preview.style.display = '';
+        const content = el.querySelector('.cv-system-content');
+        if (content) content.remove();
+      }
+    },
+
+    /** Remove a session's cached DOM when the session is destroyed */
+    cleanupSession(sessionId) {
+      const cache = sessionCache.get(sessionId);
+      if (cache) {
+        cache.el.remove();
+        sessionCache.delete(sessionId);
+      }
+      draftTextMap.delete(sessionId);
     },
   };
 })();
