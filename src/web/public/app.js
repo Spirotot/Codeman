@@ -4755,22 +4755,13 @@ class CodemanApp {
         sessionNames.push(`w${startNumber + i}-${caseName}`);
       }
 
-      // Build env overrides from global + case settings (case overrides global)
-      const caseSettings = this.getCaseSettings(caseName);
-      const globalSettings = this.loadAppSettingsFromStorage();
-      const envOverrides = {};
-      if (caseSettings.agentTeams || globalSettings.agentTeamsEnabled) {
-        envOverrides.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
-      }
-      const hasEnvOverrides = Object.keys(envOverrides).length > 0;
-
       // Step 1: Create all sessions in parallel
       this.terminal.writeln(`\x1b[90m Creating ${tabCount} session(s)...\x1b[0m`);
       const createPromises = sessionNames.map(name =>
         fetch('/api/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workingDir, name, ...(hasEnvOverrides ? { envOverrides } : {}) })
+          body: JSON.stringify({ workingDir, name })
         }).then(r => r.json())
       );
       const createResults = await Promise.all(createPromises);
@@ -6870,8 +6861,8 @@ class CodemanApp {
     claudeModeSelect.onchange = () => {
       allowedToolsRow.style.display = claudeModeSelect.value === 'allowedTools' ? '' : 'none';
     };
-    // Claude Permissions settings
-    document.getElementById('appSettingsAgentTeams').checked = settings.agentTeamsEnabled ?? false;
+    // Claude Permissions settings (read-only, reflects ~/.claude/settings.json)
+    this.loadAgentTeamsStatus();
     // CPU Priority settings
     const niceSettings = settings.nice || {};
     document.getElementById('appSettingsNiceEnabled').checked = niceSettings.enabled ?? false;
@@ -7009,6 +7000,18 @@ class CodemanApp {
       this._updateWelcomeTunnelBtn(false);
       this._updateTunnelIndicator(false);
     }
+  }
+
+  async loadAgentTeamsStatus() {
+    const checkbox = document.getElementById('appSettingsAgentTeams');
+    try {
+      const res = await fetch('/api/claude-settings/agent-teams');
+      const data = await res.json();
+      checkbox.checked = data.enabled;
+    } catch {
+      checkbox.checked = false;
+    }
+    checkbox.disabled = true;
   }
 
   _updateTunnelUrlDisplay(url) {
@@ -7679,8 +7682,6 @@ class CodemanApp {
       // Claude CLI settings
       claudeMode: document.getElementById('appSettingsClaudeMode').value,
       allowedTools: document.getElementById('appSettingsAllowedTools').value.trim(),
-      // Claude Permissions settings
-      agentTeamsEnabled: document.getElementById('appSettingsAgentTeams').checked,
       // CPU Priority settings
       nice: {
         enabled: document.getElementById('appSettingsNiceEnabled').checked,
@@ -12119,81 +12120,6 @@ class CodemanApp {
   // ═══════════════════════════════════════════════════════════════
   // Case Settings
   // ═══════════════════════════════════════════════════════════════
-
-  toggleCaseSettings() {
-    const popover = document.getElementById('caseSettingsPopover');
-    if (popover.classList.contains('hidden')) {
-      // Load settings for current case
-      const caseName = document.getElementById('quickStartCase').value || 'testcase';
-      const settings = this.getCaseSettings(caseName);
-      document.getElementById('caseAgentTeams').checked = settings.agentTeams;
-      popover.classList.remove('hidden');
-
-      // Close on outside click (one-shot listener)
-      const closeHandler = (e) => {
-        if (!popover.contains(e.target) && !e.target.classList.contains('btn-case-settings')) {
-          popover.classList.add('hidden');
-          document.removeEventListener('click', closeHandler);
-        }
-      };
-      // Defer to avoid catching the current click
-      setTimeout(() => document.addEventListener('click', closeHandler), 0);
-    } else {
-      popover.classList.add('hidden');
-    }
-  }
-
-  getCaseSettings(caseName) {
-    try {
-      const stored = localStorage.getItem('caseSettings_' + caseName);
-      if (stored) return JSON.parse(stored);
-    } catch { /* ignore */ }
-    return { agentTeams: false };
-  }
-
-  saveCaseSettings(caseName, settings) {
-    localStorage.setItem('caseSettings_' + caseName, JSON.stringify(settings));
-  }
-
-  onCaseSettingChanged() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
-    const settings = this.getCaseSettings(caseName);
-    settings.agentTeams = document.getElementById('caseAgentTeams').checked;
-    this.saveCaseSettings(caseName, settings);
-    // Sync mobile checkbox
-    const mobileCheckbox = document.getElementById('caseAgentTeamsMobile');
-    if (mobileCheckbox) mobileCheckbox.checked = settings.agentTeams;
-  }
-
-  toggleCaseSettingsMobile() {
-    const popover = document.getElementById('caseSettingsPopoverMobile');
-    if (popover.classList.contains('hidden')) {
-      const caseName = document.getElementById('quickStartCase').value || 'testcase';
-      const settings = this.getCaseSettings(caseName);
-      document.getElementById('caseAgentTeamsMobile').checked = settings.agentTeams;
-      popover.classList.remove('hidden');
-
-      const closeHandler = (e) => {
-        if (!popover.contains(e.target) && !e.target.classList.contains('btn-case-settings-mobile')) {
-          popover.classList.add('hidden');
-          document.removeEventListener('click', closeHandler);
-        }
-      };
-      setTimeout(() => document.addEventListener('click', closeHandler), 0);
-    } else {
-      popover.classList.add('hidden');
-    }
-  }
-
-  onCaseSettingChangedMobile() {
-    const caseName = document.getElementById('quickStartCase').value || 'testcase';
-    const settings = this.getCaseSettings(caseName);
-    settings.agentTeams = document.getElementById('caseAgentTeamsMobile').checked;
-    this.saveCaseSettings(caseName, settings);
-    // Sync desktop checkbox
-    const desktopCheckbox = document.getElementById('caseAgentTeams');
-    if (desktopCheckbox) desktopCheckbox.checked = settings.agentTeams;
-  }
 
   // ═══════════════════════════════════════════════════════════════
   // Create Case Modal

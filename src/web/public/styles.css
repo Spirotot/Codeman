@@ -2206,8 +2206,6 @@ body {
   background: var(--bg-card);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
-  /* contain: style only — layout/paint containment clips the case-settings popover
-     that extends above the toolbar (popover uses position:absolute + bottom:100%) */
   contain: style;
 }
 
@@ -2502,18 +2500,6 @@ body {
 }
 
 /* Mobile case settings gear - hidden on desktop */
-.btn-case-settings-mobile {
-  display: none;
-}
-
-.case-settings-popover-mobile {
-  display: none;
-}
-
-.case-settings-popover-mobile.hidden {
-  display: none;
-}
-
 /* Button icon styling */
 .btn-toolbar .btn-icon {
   display: inline-flex;
@@ -2830,51 +2816,6 @@ body {
   background: var(--green);
   color: white;
   border-color: var(--green);
-}
-
-.btn-case-settings {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-left: none;
-  border-radius: 0 4px 4px 0;
-  color: var(--text-dim);
-  font-size: 1rem;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-case-settings:hover {
-  background: var(--accent);
-  color: white;
-  border-color: var(--accent);
-}
-
-.case-settings-popover {
-  position: absolute;
-  bottom: 100%;
-  right: 0;
-  margin-bottom: 4px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem 0.6rem;
-  width: 220px;
-  z-index: 1000;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-}
-
-.case-settings-popover.hidden {
-  display: none;
-}
-
-.case-settings-popover .form-hint {
-  margin-top: 0.2rem;
-  font-size: 0.6rem;
 }
 
 .toolbar-input {

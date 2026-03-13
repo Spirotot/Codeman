@@ -476,6 +476,21 @@ export function registerSystemRoutes(
     }
   });
 
+  // ========== Claude CLI Settings (read-only) ==========
+
+  /** Returns the global Claude CLI agent-teams env var from ~/.claude/settings.json */
+  app.get('/api/claude-settings/agent-teams', async () => {
+    try {
+      const claudeSettingsPath = join(homedir(), '.claude', 'settings.json');
+      const content = await fs.readFile(claudeSettingsPath, 'utf-8');
+      const settings = JSON.parse(content);
+      const enabled = settings?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
+      return { success: true, enabled };
+    } catch {
+      return { success: true, enabled: false };
+    }
+  });
+
   // ========== Model Configuration ==========
 
   app.get('/api/execution/model-config', async () => {
