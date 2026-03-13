@@ -650,6 +650,24 @@ class CodemanApp {
 
     this._localEchoOverlay = new LocalEchoOverlay(this.terminal);
 
+    // ── Terminal slash command dropdown ──
+    this._slashDropdown = document.createElement('div');
+    this._slashDropdown.className = 'term-slash-dropdown';
+    this._slashDropdown.style.display = 'none';
+    container.appendChild(this._slashDropdown);
+    this._slashResults = [];
+    this._slashSelectedIndex = 0;
+    this._slashDropdown.addEventListener('mousedown', (e) => {
+      const item = e.target.closest('.term-slash-item');
+      if (item) {
+        e.preventDefault();
+        this._slashSelectedIndex = parseInt(item.dataset.index, 10) || 0;
+        this._acceptTermSlash();
+      }
+    });
+    // Load custom commands eagerly
+    if (typeof SlashCommands !== 'undefined') SlashCommands.loadCustomCommands(this.activeSessionId);
+
     // On mobile Safari, delay initial fit() to allow layout to settle
     // This prevents 0-column terminals caused by fit() running before container is sized
     const isMobileSafari = MobileDetection.getDeviceType() === 'mobile' &&
@@ -912,10 +930,14 @@ class CodemanApp {
             }
             // 'pending' = removed unsent text (no PTY backspace needed)
             // false = nothing to remove (swallow the backspace)
+            this._updateTermSlash();
             return;
           }
           if (/^[\r\n]+$/.test(data)) {
+            // Slash dropdown: accept completion on Enter instead of sending to PTY
+            if (this._isTermSlashOpen()) { this._acceptTermSlash(); return; }
             // Enter: send full buffered text + \r to PTY in one shot
+            if (this._slashDropdown) { this._slashDropdown.style.display = 'none'; this._slashResults = []; }
             const text = this._localEchoOverlay?.pendingText || '';
             this._localEchoOverlay?.clear();
             // Suppress detection so PTY-echoed text isn't re-detected as user input
@@ -941,6 +963,7 @@ class CodemanApp {
           if (data.length > 1 && data.charCodeAt(0) >= 32) {
             // Paste: append to overlay only (sent on Enter)
             this._localEchoOverlay?.appendText(data);
+            this._updateTermSlash();
             return;
           }
           if (data.charCodeAt(0) < 32) {
@@ -953,6 +976,19 @@ class CodemanApp {
             // Single-byte ESC (user pressing Escape) still falls through to
             // the control char handler below.
             if (data.length > 1 && data.charCodeAt(0) === 27) {
+              // Slash dropdown: ArrowUp/Down navigate the menu
+              if (this._isTermSlashOpen()) {
+                if (data === '\x1b[A') { // Arrow Up
+                  this._slashSelectedIndex = (this._slashSelectedIndex - 1 + this._slashResults.length) % this._slashResults.length;
+                  this._updateTermSlash();
+                  return;
+                }
+                if (data === '\x1b[B') { // Arrow Down
+                  this._slashSelectedIndex = (this._slashSelectedIndex + 1) % this._slashResults.length;
+                  this._updateTermSlash();
+                  return;
+                }
+              }
               // ── Cursor navigation within overlay ──
               // Intercept arrow keys, Home/End, Delete when overlay has pending text.
               // These let the user edit their buffered input before sending.
@@ -963,6 +999,18 @@ class CodemanApp {
                 if (data === '\x1b[H' || data === '\x1b[1~') { ov.moveCursorHome(); return; } // Home
                 if (data === '\x1b[F' || data === '\x1b[4~') { ov.moveCursorEnd(); return; }  // End
                 if (data === '\x1b[3~') { ov.deleteCharForward(); return; } // Delete
+              }
+              // Bracketed paste (\x1b[200~text\x1b[201~) — extract text and
+              // feed to the overlay so it appears in the zero-lag input buffer.
+              // Without this, pasted text bypasses the overlay and goes straight
+              // to the PTY, inserting at the wrong cursor position.
+              if (data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~')) {
+                const pastedText = data.slice(6, -6); // strip markers
+                if (pastedText) {
+                  this._localEchoOverlay?.appendText(pastedText);
+                  this._updateTermSlash();
+                }
+                return;
               }
               // Multi-byte escape sequence — forward to PTY without clearing
               // overlay/flushed state (terminal response, not user input)
@@ -978,6 +1026,8 @@ class CodemanApp {
               flushInput();
               return;
             }
+            // Slash dropdown: Tab accepts completion
+            if (data === '\t' && this._isTermSlashOpen()) { this._acceptTermSlash(); return; }
             // Tab key: send pending text + Tab to PTY for tab completion.
             // Set a flag so flushPendingWrites() re-detects buffer text when
             // the PTY response arrives (event-driven, no fixed timer).
@@ -1043,7 +1093,14 @@ class CodemanApp {
               this._localEchoOverlay.moveCursorEnd();
               return;
             }
+            // Escape: close slash dropdown if open (swallow the ESC)
+            if (data === '\x1b' && this._isTermSlashOpen()) {
+              this._slashDropdown.style.display = 'none';
+              this._slashResults = [];
+              return;
+            }
             // Control chars (Ctrl+C, single ESC): send buffered text + control char immediately
+            if (this._slashDropdown) { this._slashDropdown.style.display = 'none'; this._slashResults = []; }
             const text = this._localEchoOverlay?.pendingText || '';
             this._localEchoOverlay?.clear();
             // Suppress detection so PTY-echoed text isn't re-detected as user input
@@ -1066,6 +1123,7 @@ class CodemanApp {
           if (data.length === 1 && data.charCodeAt(0) >= 32) {
             // Printable char: add to overlay only (sent on Enter)
             this._localEchoOverlay?.addChar(data);
+            this._updateTermSlash();
             return;
           }
         }
@@ -4296,6 +4354,64 @@ class CodemanApp {
     const currentIndex = this.sessionOrder.indexOf(this.activeSessionId);
     const prevIndex = (currentIndex - 1 + this.sessionOrder.length) % this.sessionOrder.length;
     this.selectSession(this.sessionOrder[prevIndex]);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Terminal slash command autocomplete
+  // ═══════════════════════════════════════════════════════════════
+
+  /** Update terminal slash dropdown based on current pendingText */
+  _updateTermSlash() {
+    if (typeof SlashCommands === 'undefined' || !this._slashDropdown) return;
+    const text = this._localEchoOverlay?.pendingText || '';
+    const match = text.match(/^\/(\S*)$/);
+    if (!match) {
+      this._slashDropdown.style.display = 'none';
+      this._slashResults = [];
+      return;
+    }
+    this._slashResults = SlashCommands.match('/' + match[1], 12);
+    if (this._slashResults.length === 0) {
+      this._slashDropdown.style.display = 'none';
+      return;
+    }
+    this._slashSelectedIndex = Math.min(this._slashSelectedIndex, this._slashResults.length - 1);
+    this._slashDropdown.innerHTML = this._slashResults.map((cmd, i) =>
+      `<div class="term-slash-item${i === this._slashSelectedIndex ? ' selected' : ''}" data-index="${i}">` +
+      `<span class="term-slash-name">${cmd.name}</span>` +
+      `<span class="term-slash-desc">${cmd.desc}</span>` +
+      `</div>`
+    ).join('');
+    // Position above the prompt line using xterm cell dimensions
+    this._slashDropdown.style.display = '';
+    const t = this.terminal;
+    const cellH = t.dimensions?.css?.cell?.height
+      ?? t._core?._renderService?.dimensions?.css?.cell?.height;
+    if (cellH) {
+      const promptRow = t.buffer.active.cursorY;
+      const topPx = promptRow * cellH;
+      const ddH = this._slashDropdown.offsetHeight;
+      this._slashDropdown.style.bottom = 'auto';
+      this._slashDropdown.style.top = Math.max(0, topPx - ddH) + 'px';
+    }
+  }
+
+  /** Accept the currently selected slash completion */
+  _acceptTermSlash() {
+    if (!this._slashResults.length) return false;
+    const cmd = this._slashResults[this._slashSelectedIndex];
+    if (!cmd || !this._localEchoOverlay) return false;
+    // Replace pending text with completed command
+    this._localEchoOverlay.clear();
+    this._localEchoOverlay.appendText(cmd.name + ' ');
+    this._slashDropdown.style.display = 'none';
+    this._slashResults = [];
+    return true;
+  }
+
+  /** Whether the terminal slash dropdown is currently visible */
+  _isTermSlashOpen() {
+    return this._slashDropdown && this._slashDropdown.style.display !== 'none' && this._slashResults.length > 0;
   }
 
   // ═══════════════════════════════════════════════════════════════
