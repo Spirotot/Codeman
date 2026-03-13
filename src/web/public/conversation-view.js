@@ -26,6 +26,18 @@ const ConversationView = (() => {
   /** @type {Map<string, string>} Draft input text per session — preserved across tab switches */
   const draftTextMap = new Map();
 
+  // ─── Thread Navigator (subagent pills) ──────────────────────
+  /** @type {string|null} Currently active thread — null = main session */
+  let activeThreadId = null;
+  /** @type {Array<{agentId: string, description: string, status: string, modelShort: string}>} */
+  let knownSubagents = [];
+  /** @type {Set<string>} Agent IDs already shown as pills (for flash-new detection) */
+  const seenPillIds = new Set();
+  /** @type {number|null} Subagent polling interval */
+  let subagentPollTimer = null;
+  /** @type {boolean} Whether completed subagents are collapsed */
+  let completedCollapsed = true;
+
   // ─── Per-session DOM cache ─────────────────────────────────
   // Each session gets its own messages container + pagination state.
   // Tab switching hides/shows cached containers — no re-fetch, no rebuild,
@@ -53,7 +65,9 @@ const ConversationView = (() => {
 
   /** Shorthand to get the active cache entry */
   function activeCache() {
-    return currentSessionId ? sessionCache.get(currentSessionId) : null;
+    if (!currentSessionId) return null;
+    const key = threadCacheKey(currentSessionId, activeThreadId);
+    return sessionCache.get(key);
   }
 
   const PAGE_SIZE = 80;
@@ -291,16 +305,13 @@ const ConversationView = (() => {
         if (!msg.content || !msg.content.trim()) return ''; // Skip empty results
         const preview = msg.content.split('\n')[0].slice(0, 80);
         const lineCount = msg.content.split('\n').length;
-        // Check if this is an Agent tool result with a subagent ID
-        const hasSubagent = !!msg.agentId;
-        return `<div class="cv-msg cv-result ${isExpanded ? 'expanded' : ''} ${msg.isError ? 'cv-error' : ''} ${hasSubagent ? 'cv-agent-result' : ''}" data-tool-id="${escapeHtml(id)}"${hasSubagent ? ` data-agent-id="${escapeHtml(msg.agentId)}"` : ''}>
+        return `<div class="cv-msg cv-result ${isExpanded ? 'expanded' : ''} ${msg.isError ? 'cv-error' : ''}" data-tool-id="${escapeHtml(id)}">
           <div class="cv-result-header" onclick="ConversationView.toggleTool('${escapeHtml(id)}')">
             <span class="cv-chevron">${isExpanded ? '▾' : '▸'}</span>
-            <span class="cv-result-label">${hasSubagent ? '🤖 Agent launched' : msg.isError ? '✗ Error' : '✓ Result'}</span>
-            <span class="cv-result-preview">${hasSubagent ? '' : `${escapeHtml(preview)}${lineCount > 1 ? ` (${lineCount} lines)` : ''}`}</span>
+            <span class="cv-result-label">${msg.isError ? '✗ Error' : '✓ Result'}</span>
+            <span class="cv-result-preview">${escapeHtml(preview)}${lineCount > 1 ? ` (${lineCount} lines)` : ''}</span>
           </div>
           ${isExpanded ? `<pre class="cv-code cv-result-content"><code>${escapeHtml(msg.content)}</code></pre>` : ''}
-          ${hasSubagent ? `<button class="cv-subagent-btn" onclick="ConversationView.loadSubagent('${escapeHtml(msg.agentId)}', this)" data-agent-id="${escapeHtml(msg.agentId)}">View subagent conversation</button>` : ''}
         </div>`;
       }
 
@@ -419,23 +430,7 @@ const ConversationView = (() => {
       }
     }
 
-    autoExpandSubagents();
-  }
-
-  /** Auto-expand subagent conversations that haven't been loaded yet. */
-  function autoExpandSubagents() {
-    if (!messagesContainer) return;
-    const btns = messagesContainer.querySelectorAll('.cv-subagent-btn');
-    btns.forEach((btn) => {
-      const parent = btn.closest('.cv-agent-result');
-      if (parent && !parent.querySelector('.cv-subagent-thread')) {
-        const agentId = btn.dataset.agentId;
-        if (agentId) {
-          setTimeout(() => ConversationView.loadSubagent(agentId, btn), 50);
-        }
-      }
-    });
-  }
+    }
 
   function updateHeader() {
     const cache = activeCache();
@@ -456,11 +451,14 @@ const ConversationView = (() => {
     // captures let us detect staleness and bail out instead of corrupting
     // the newly-active session's view.
     const fetchSessionId = currentSessionId;
+    const fetchThreadId = activeThreadId;
     const cache = activeCache();
     if (!cache) return;
     const targetContainer = cache.el;
     try {
-      const res = await fetch(`/api/sessions/${fetchSessionId}/conversation?limit=20`);
+      let url = `/api/sessions/${fetchSessionId}/conversation?limit=20`;
+      if (fetchThreadId) url += `&subagent=${encodeURIComponent(fetchThreadId)}`;
+      const res = await fetch(url);
       if (!res.ok) return;
       // Guard: session changed while we were waiting for the response.
       if (currentSessionId !== fetchSessionId) return;
@@ -484,7 +482,6 @@ const ConversationView = (() => {
           }
           cache.totalMessages = data.total;
           updateHeader();
-          autoExpandSubagents();
           if (wasAtBottom) {
             targetContainer.scrollTop = targetContainer.scrollHeight;
           }
@@ -655,6 +652,7 @@ const ConversationView = (() => {
     }
     // Fallback: poll every 10s in case SSE events are missed
     refreshTimer = setInterval(fetchNewMessages, 10000);
+    startSubagentPolling();
   }
 
   function stopAutoRefresh() {
@@ -663,6 +661,7 @@ const ConversationView = (() => {
       refreshTimer = null;
     }
     clearTimeout(refreshDebounce);
+    stopSubagentPolling();
     if (typeof app !== 'undefined' && app.eventSource) {
       app.eventSource.removeEventListener('session:terminal', onSSETerminalEvent);
       app.eventSource.removeEventListener('session:completion', onSSETerminalEvent);
@@ -671,6 +670,201 @@ const ConversationView = (() => {
       app.eventSource.removeEventListener('session:idle', onSSEIdle);
       app.eventSource.removeEventListener('session:completion', onSSECompletion);
     }
+  }
+
+  // ─── Thread Navigator ─────────────────────────────────────────
+
+  /** Cache key for a thread — "sessionId" for main, "sessionId:agentId" for subagent */
+  function threadCacheKey(sessionId, threadId) {
+    return threadId ? `${sessionId}:${threadId}` : sessionId;
+  }
+
+  /** Fetch subagents for the current session and update pills */
+  async function pollSubagents() {
+    if (!isOpen || !currentSessionId) return;
+    try {
+      const res = await fetch(`/api/sessions/${currentSessionId}/subagents`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const agents = data.data || [];
+      if (agents.length === 0 && knownSubagents.length === 0) return;
+
+      // Detect new agents for flash animation
+      const newIds = [];
+      for (const a of agents) {
+        if (!seenPillIds.has(a.agentId)) {
+          newIds.push(a.agentId);
+          seenPillIds.add(a.agentId);
+        }
+      }
+
+      knownSubagents = agents;
+      renderThreadPills(newIds);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function startSubagentPolling() {
+    stopSubagentPolling();
+    pollSubagents();
+    subagentPollTimer = setInterval(pollSubagents, 5000);
+  }
+
+  function stopSubagentPolling() {
+    if (subagentPollTimer) {
+      clearInterval(subagentPollTimer);
+      subagentPollTimer = null;
+    }
+  }
+
+  /** Render the pill bar with Main + subagent pills */
+  function renderThreadPills(newIds) {
+    const bar = panel?.querySelector('#cvThreadBar');
+    const container = panel?.querySelector('#cvThreadPills');
+    if (!bar || !container) return;
+
+    if (knownSubagents.length === 0) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = '';
+
+    const active = knownSubagents.filter((a) => a.status !== 'completed');
+    const completed = knownSubagents.filter((a) => a.status === 'completed');
+
+    let html = '';
+
+    // Main pill
+    const mainActive = activeThreadId === null;
+    html += `<button class="cv-pill ${mainActive ? 'cv-pill-active' : ''}" onclick="ConversationView.switchThread(null)">Main</button>`;
+
+    // Active subagent pills
+    for (const a of active) {
+      const isActive = activeThreadId === a.agentId;
+      const isNew = newIds && newIds.includes(a.agentId);
+      const label = pillLabel(a);
+      const statusDot = a.status === 'active' ? '<span class="cv-pill-dot cv-pill-dot-active"></span>' : '<span class="cv-pill-dot cv-pill-dot-idle"></span>';
+      html += `<button class="cv-pill ${isActive ? 'cv-pill-active' : ''} ${isNew ? 'cv-pill-flash' : ''}" onclick="ConversationView.switchThread('${escapeHtml(a.agentId)}')" title="${escapeHtml(a.description || a.agentId)}">${statusDot}${escapeHtml(label)}</button>`;
+    }
+
+    // Completed group
+    if (completed.length > 0) {
+      if (completedCollapsed) {
+        html += `<button class="cv-pill cv-pill-completed-group" onclick="ConversationView.toggleCompleted()">${completed.length} completed</button>`;
+      } else {
+        html += `<button class="cv-pill cv-pill-completed-group" onclick="ConversationView.toggleCompleted()">▾ completed</button>`;
+        for (const a of completed) {
+          const isActive = activeThreadId === a.agentId;
+          const label = pillLabel(a);
+          html += `<button class="cv-pill cv-pill-completed ${isActive ? 'cv-pill-active' : ''}" onclick="ConversationView.switchThread('${escapeHtml(a.agentId)}')" title="${escapeHtml(a.description || a.agentId)}">✓ ${escapeHtml(label)}</button>`;
+        }
+      }
+    }
+
+    container.innerHTML = html;
+  }
+
+  /** Short label for a subagent pill */
+  function pillLabel(agent) {
+    if (agent.description) {
+      // Truncate long descriptions
+      return agent.description.length > 20 ? agent.description.slice(0, 18) + '…' : agent.description;
+    }
+    return agent.agentId.slice(0, 8);
+  }
+
+  /** Switch to a different thread (null = main session) */
+  function switchThread(threadId) {
+    if (threadId === activeThreadId) return;
+    if (!currentSessionId) return;
+
+    // Save scroll position of the current thread's container
+    const prevKey = threadCacheKey(currentSessionId, activeThreadId);
+    const prevCache = sessionCache.get(prevKey);
+    if (prevCache) {
+      prevCache.savedScrollTop = prevCache.el.scrollTop;
+      prevCache.el.style.display = 'none';
+    }
+
+    activeThreadId = threadId;
+
+    // Get or create cache for the new thread
+    const newKey = threadCacheKey(currentSessionId, threadId);
+    const cache = getCache(newKey);
+    messagesContainer = cache.el;
+
+    // Attach to wrapper if not already in DOM
+    const wrapper = panel?.querySelector('#cvMessagesWrapper');
+    if (wrapper && !messagesContainer.parentNode) {
+      wrapper.appendChild(messagesContainer);
+    }
+    messagesContainer.style.display = '';
+
+    // Update pills
+    renderThreadPills([]);
+
+    // Update input bar — disable when viewing subagent thread
+    const input = panel?.querySelector('#cvInput');
+    const sendBtn = panel?.querySelector('#cvSendBtn');
+    if (threadId) {
+      if (input) { input.disabled = true; input.placeholder = 'Viewing subagent thread (read-only)'; }
+      if (sendBtn) sendBtn.disabled = true;
+    } else {
+      if (input) { input.disabled = false; input.placeholder = 'Send a message…'; }
+      restoreDraft(currentSessionId);
+    }
+
+    // Update header count
+    updateHeader();
+
+    // Load messages if first visit
+    if (cache.totalMessages === 0) {
+      loadSubagentThread(currentSessionId, threadId, cache);
+    } else {
+      // Restore scroll
+      if (cache.savedScrollTop >= 0) {
+        messagesContainer.style.scrollBehavior = 'auto';
+        messagesContainer.scrollTop = cache.savedScrollTop;
+        cache.savedScrollTop = -1;
+        messagesContainer.style.scrollBehavior = '';
+      }
+    }
+  }
+
+  /** Load a subagent's conversation into its cache */
+  async function loadSubagentThread(sessionId, agentId, cache) {
+    if (!agentId) return; // main thread uses normal loadMessages
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/conversation?subagent=${agentId}&limit=200`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const msgs = data.messages || [];
+      cache.totalMessages = data.total || msgs.length;
+      cache.hasMore = data.hasMore || false;
+      if (msgs.length > 0) {
+        cache.oldestIndex = msgs[msgs.length - 1].index;
+        cache.newestIndex = msgs[0].index;
+      }
+      renderAll(msgs, cache);
+      updateHeader();
+      if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    } catch (err) {
+      console.error('[ConversationView] Failed to load subagent thread:', err);
+    }
+  }
+
+  /** Reset thread state when switching sessions */
+  function resetThreadState() {
+    activeThreadId = null;
+    knownSubagents = [];
+    seenPillIds.clear();
+    completedCollapsed = true;
+    const bar = panel?.querySelector('#cvThreadBar');
+    if (bar) bar.style.display = 'none';
+    // Re-enable input (in case we were viewing a subagent thread)
+    const input = panel?.querySelector('#cvInput');
+    if (input) { input.disabled = false; input.placeholder = 'Send a message…'; }
   }
 
   // ─── DOM Setup ──────────────────────────────────────────────
@@ -695,6 +889,9 @@ const ConversationView = (() => {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
           </button>
         </div>
+      </div>
+      <div class="cv-thread-bar" id="cvThreadBar" style="display:none">
+        <div class="cv-thread-pills" id="cvThreadPills"></div>
       </div>
       <div class="cv-messages-wrapper" id="cvMessagesWrapper">
         <button class="cv-scroll-bottom" id="cvScrollBottom" onclick="ConversationView.scrollToBottom()" title="Scroll to bottom" style="display:none">
@@ -952,7 +1149,8 @@ const ConversationView = (() => {
 
       // Hide the previous session's messages container — save scroll position first
       // (display:none resets scrollTop to 0)
-      const prevCache = currentSessionId ? sessionCache.get(currentSessionId) : null;
+      const prevKey = currentSessionId ? threadCacheKey(currentSessionId, activeThreadId) : null;
+      const prevCache = prevKey ? sessionCache.get(prevKey) : null;
       if (prevCache) {
         prevCache.savedScrollTop = prevCache.el.scrollTop;
         prevCache.el.style.display = 'none';
@@ -962,8 +1160,12 @@ const ConversationView = (() => {
       isOpen = true;
       if (typeof SlashCommands !== 'undefined') SlashCommands.invalidate();
 
-      // Get or create this session's cached container
-      const cache = getCache(sessionId);
+      // Reset thread state when switching sessions
+      resetThreadState();
+
+      // Get or create this session's cached container (main thread)
+      const cacheKey = threadCacheKey(sessionId, null);
+      const cache = getCache(cacheKey);
       messagesContainer = cache.el;
 
       // Attach to the wrapper if not already in the DOM
@@ -1256,56 +1458,15 @@ const ConversationView = (() => {
       });
     },
 
-    /** Load and render a subagent's conversation inline below its parent result */
-    async loadSubagent(agentId, btnEl) {
-      if (!currentSessionId || !btnEl) return;
-      const parent = btnEl.closest('.cv-agent-result');
-      if (!parent) return;
+    /** Switch to a thread (null = main, agentId = subagent) */
+    switchThread(threadId) {
+      switchThread(threadId);
+    },
 
-      // Toggle: if already loaded, toggle visibility
-      const existing = parent.querySelector('.cv-subagent-thread');
-      if (existing) {
-        const isHidden = existing.style.display === 'none';
-        existing.style.display = isHidden ? '' : 'none';
-        btnEl.textContent = isHidden ? 'Hide subagent conversation' : 'View subagent conversation';
-        return;
-      }
-
-      btnEl.textContent = 'Loading…';
-      btnEl.disabled = true;
-
-      try {
-        const res = await fetch(`/api/sessions/${currentSessionId}/conversation?subagent=${agentId}&limit=200`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const msgs = data.messages || [];
-
-        const thread = document.createElement('div');
-        thread.className = 'cv-subagent-thread';
-
-        const threadHeader = document.createElement('div');
-        threadHeader.className = 'cv-subagent-header';
-        threadHeader.innerHTML = `<span class="cv-subagent-label">Subagent (${msgs.length} messages)</span>`;
-        thread.appendChild(threadHeader);
-
-        // Render in chronological order (API returns newest-first)
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const html = renderMessage(msgs[i]);
-          if (html) {
-            const div = document.createElement('div');
-            div.innerHTML = html;
-            thread.appendChild(div.firstElementChild);
-          }
-        }
-
-        parent.appendChild(thread);
-        btnEl.textContent = 'Hide subagent conversation';
-        btnEl.disabled = false;
-      } catch (err) {
-        console.error('[ConversationView] Failed to load subagent:', err);
-        btnEl.textContent = 'Failed to load — tap to retry';
-        btnEl.disabled = false;
-      }
+    /** Toggle collapsed/expanded state of completed subagent pills */
+    toggleCompleted() {
+      completedCollapsed = !completedCollapsed;
+      renderThreadPills([]);
     },
 
     toggleThinking(index) {
@@ -1382,10 +1543,12 @@ const ConversationView = (() => {
 
     /** Remove a session's cached DOM when the session is destroyed */
     cleanupSession(sessionId) {
-      const cache = sessionCache.get(sessionId);
-      if (cache) {
-        cache.el.remove();
-        sessionCache.delete(sessionId);
+      // Clean up main thread cache and all subagent thread caches
+      for (const [key, cache] of sessionCache) {
+        if (key === sessionId || key.startsWith(sessionId + ':')) {
+          cache.el.remove();
+          sessionCache.delete(key);
+        }
       }
       draftTextMap.delete(sessionId);
     },

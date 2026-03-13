@@ -38,6 +38,7 @@ import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
 import { writeHooksConfig, updateCaseEnvVars } from '../../hooks-config.js';
 import { generateClaudeMd } from '../../templates/claude-md.js';
 import { imageWatcher } from '../../image-watcher.js';
+import { subagentWatcher } from '../../subagent-watcher.js';
 import { getLifecycleLog } from '../../session-lifecycle-log.js';
 import type { SessionPort, EventPort, ConfigPort, InfraPort, AuthPort } from '../ports/index.js';
 import { MAX_CONCURRENT_SESSIONS } from '../../config/map-limits.js';
@@ -1060,8 +1061,11 @@ export function registerSessionRoutes(
                 toolMsg.toolInput = { _error: 'Could not serialize input' };
               }
             }
-            // Check for subagent (Task tool) via agent description
-            if (block.name === 'Task' && typeof (block.input as Record<string, unknown>)?.description === 'string') {
+            // Check for subagent (Agent or Task tool) via agent description
+            if (
+              (block.name === 'Agent' || block.name === 'Task') &&
+              typeof (block.input as Record<string, unknown>)?.description === 'string'
+            ) {
               toolMsg.agentDescription = (block.input as Record<string, unknown>).description as string;
             }
             results.push(toolMsg);
@@ -1263,14 +1267,12 @@ export function registerSessionRoutes(
       }
     }
 
-    // Also check for subagent JSONL if requested
-    if (subagentId && jsonlPath) {
-      const parentDir = dirname(jsonlPath);
-      const subagentPath = join(parentDir, `${subagentId}.jsonl`);
-      try {
-        await fs.access(subagentPath);
-        jsonlPath = subagentPath;
-      } catch {
+    // Also check for subagent JSONL if requested — use SubagentWatcher's known path
+    if (subagentId) {
+      const subagentInfo = subagentWatcher.getSubagent(subagentId);
+      if (subagentInfo?.filePath) {
+        jsonlPath = subagentInfo.filePath;
+      } else {
         return { messages: [], total: 0, hasMore: false };
       }
     }
