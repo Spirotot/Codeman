@@ -21,8 +21,6 @@ const ConversationView = (() => {
   let refreshTimer = null;
   /** @type {HTMLElement|null} Typing indicator element */
   let typingIndicator = null;
-  /** @type {boolean} Whether the session is currently working (for stop button visibility) */
-  let sessionBusy = false;
   /** @type {Map<string, string>} Draft input text per session — preserved across tab switches */
   const draftTextMap = new Map();
 
@@ -380,7 +378,6 @@ const ConversationView = (() => {
 
       updateHeader();
       syncTypingIndicator();
-      syncStopButton();
 
       // Scroll to bottom after initial load — instant, not smooth
       if (!append && targetContainer.parentNode) {
@@ -490,7 +487,6 @@ const ConversationView = (() => {
       // Sync typing indicator + stop button on every poll — more reliable than
       // relying solely on SSE events which can be missed or arrive out of order.
       syncTypingIndicator();
-      syncStopButton();
     } catch {
       /* ignore fetch errors */
     }
@@ -568,74 +564,41 @@ const ConversationView = (() => {
 
   // ─── Stop Button ───────────────────────────────────────────────
 
-  function showStopButton() {
-    if (sessionBusy || activeThreadId) return;
-    sessionBusy = true;
-    const stopBtn = panel?.querySelector('#cvStopBtn');
-    const sendBtn = panel?.querySelector('#cvSendBtn');
-    if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = false; }
-    if (sendBtn) sendBtn.style.display = 'none';
-  }
+  // Stop button is always visible — no show/hide/sync logic needed.
 
-  function hideStopButton() {
-    if (!sessionBusy) return;
-    sessionBusy = false;
-    const stopBtn = panel?.querySelector('#cvStopBtn');
-    const sendBtn = panel?.querySelector('#cvSendBtn');
-    if (stopBtn) { stopBtn.style.display = 'none'; stopBtn.disabled = false; }
-    if (sendBtn) sendBtn.style.display = '';
-  }
-
-  function syncStopButton() {
-    if (!isOpen || !currentSessionId) return;
-    // Don't show stop button when viewing a subagent thread (read-only)
-    if (activeThreadId) { hideStopButton(); return; }
-    if (typeof app === 'undefined') return;
-    const session = app.sessions?.get(currentSessionId);
-    const isBusy = session && (session.status === 'busy' || session.status === 'working');
-    if (isBusy) {
-      showStopButton();
-    } else {
-      hideStopButton();
-    }
-  }
-
-  /** SSE handler: session:working → show indicator + stop button */
+  /** SSE handler: session:working → show typing indicator */
   function onSSEWorking(e) {
     if (!isOpen || !currentSessionId) return;
     try {
       const data = JSON.parse(e.data);
       if (data.id === currentSessionId) {
         showTypingIndicator();
-        showStopButton();
       }
     } catch {
       /* ignore */
     }
   }
 
-  /** SSE handler: session:idle → hide indicator + stop button */
+  /** SSE handler: session:idle → hide typing indicator */
   function onSSEIdle(e) {
     if (!isOpen || !currentSessionId) return;
     try {
       const data = JSON.parse(e.data);
       if (data.id === currentSessionId) {
         hideTypingIndicator();
-        hideStopButton();
       }
     } catch {
       /* ignore */
     }
   }
 
-  /** SSE handler: session:completion → hide indicator + stop button */
+  /** SSE handler: session:completion → hide typing indicator */
   function onSSECompletion(e) {
     if (!isOpen || !currentSessionId) return;
     try {
       const data = JSON.parse(e.data);
       if (data.id === currentSessionId) {
         hideTypingIndicator();
-        hideStopButton();
       }
     } catch {
       /* ignore */
@@ -813,11 +776,15 @@ const ConversationView = (() => {
     // Update input bar — disable when viewing subagent thread
     const input = panel?.querySelector('#cvInput');
     const sendBtn = panel?.querySelector('#cvSendBtn');
+    const stopBtn = panel?.querySelector('#cvStopBtn');
     if (threadId) {
       if (input) { input.disabled = true; input.placeholder = 'Viewing subagent thread (read-only)'; }
-      if (sendBtn) sendBtn.disabled = true;
+      if (sendBtn) sendBtn.style.display = 'none';
+      if (stopBtn) stopBtn.style.display = 'none';
     } else {
       if (input) { input.disabled = false; input.placeholder = 'Send a message…'; }
+      if (sendBtn) sendBtn.style.display = '';
+      if (stopBtn) stopBtn.style.display = '';
       restoreDraft(currentSessionId);
     }
 
@@ -904,11 +871,11 @@ const ConversationView = (() => {
       <div class="cv-input-bar">
         <div class="cv-slash-dropdown" id="cvSlashDropdown" style="display:none"></div>
         <textarea class="cv-input" id="cvInput" rows="1" placeholder="Send a message…" autocomplete="off" autocorrect="on" spellcheck="true"></textarea>
+        <button class="cv-stop-btn" id="cvStopBtn" onclick="ConversationView.interruptSession()" title="Stop Claude (Escape)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
+        </button>
         <button class="cv-send-btn" id="cvSendBtn" onclick="ConversationView.sendMessage()" title="Send" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
-        </button>
-        <button class="cv-stop-btn" id="cvStopBtn" onclick="ConversationView.interruptSession()" title="Stop Claude (Escape)" style="display:none">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
         </button>
       </div>
     `;
@@ -1213,8 +1180,7 @@ const ConversationView = (() => {
       }
       startAutoRefresh();
 
-      // Immediately sync stop button + typing indicator with current session state
-      syncStopButton();
+      // Immediately sync typing indicator with current session state
       syncTypingIndicator();
 
       // Restore any saved draft text for the incoming session
@@ -1403,11 +1369,8 @@ const ConversationView = (() => {
         console.error('[ConversationView] Interrupt failed:', err);
       }
 
-      // Re-sync after a delay — session should transition to idle
-      setTimeout(() => {
-        syncStopButton();
-        syncTypingIndicator();
-      }, 1500);
+      // Re-sync typing indicator after a delay — session should transition to idle
+      setTimeout(() => syncTypingIndicator(), 1500);
     },
 
     refresh() {

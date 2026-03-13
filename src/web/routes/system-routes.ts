@@ -649,7 +649,12 @@ export function registerSystemRoutes(
   app.get('/api/sessions/:id/subagents', async (req) => {
     const { id } = req.params as { id: string };
     const session = findSessionOrFail(ctx, id);
-    const subagents = subagentWatcher.getSubagentsForSession(session.workingDir);
+    const allSubagents = subagentWatcher.getSubagentsForSession(session.workingDir);
+    // Filter to subagents belonging to THIS session's Claude session ID.
+    // Without this, sessions sharing the same workingDir (e.g. ~/PARA) see
+    // each other's subagents in the thread navigator.
+    const claudeId = session.claudeSessionId || id;
+    const subagents = allSubagents.filter((a) => a.sessionId === claudeId);
     return { success: true, data: subagents };
   });
 
