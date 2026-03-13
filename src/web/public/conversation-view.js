@@ -289,6 +289,29 @@ const ConversationView = (() => {
     return s;
   }
 
+  // ─── AskUserQuestion Rendering ─────────────────────────────────
+
+  function renderAskUserQuestion(msg) {
+    const questions = msg.toolInput.questions;
+    let html = '<div class="cv-msg cv-ask">';
+    html += '<div class="cv-ask-icon">❓</div>';
+    for (const q of questions) {
+      if (q.header) html += `<div class="cv-ask-header">${escapeHtml(q.header)}</div>`;
+      html += `<div class="cv-ask-question">${escapeHtml(q.question)}</div>`;
+      if (q.options && q.options.length) {
+        html += '<div class="cv-ask-options">';
+        for (const opt of q.options) {
+          html += `<div class="cv-ask-option"><span class="cv-ask-option-label">${escapeHtml(opt.label)}</span>`;
+          if (opt.description) html += `<span class="cv-ask-option-desc">${escapeHtml(opt.description)}</span>`;
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+    return html;
+  }
+
   // ─── Tool Input Formatting ───────────────────────────────────
 
   function formatToolInput(toolName, input) {
@@ -403,6 +426,10 @@ const ConversationView = (() => {
       }
 
       case 'tool_use': {
+        // AskUserQuestion gets a special card rendering
+        if (msg.toolName === 'AskUserQuestion' && msg.toolInput?.questions) {
+          return renderAskUserQuestion(msg);
+        }
         const id = msg.toolUseId || `tool-${msg.index}`;
         const isExpanded = cache ? cache.expandedTools.has(id) : false;
         const summary = formatToolInput(msg.toolName, msg.toolInput);
