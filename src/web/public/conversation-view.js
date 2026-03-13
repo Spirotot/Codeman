@@ -569,25 +569,31 @@ const ConversationView = (() => {
   // ─── Stop Button ───────────────────────────────────────────────
 
   function showStopButton() {
+    if (sessionBusy || activeThreadId) return;
     sessionBusy = true;
-    const btn = panel?.querySelector('#cvStopBtn');
-    if (btn) btn.style.display = '';
+    const stopBtn = panel?.querySelector('#cvStopBtn');
+    const sendBtn = panel?.querySelector('#cvSendBtn');
+    if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = false; }
+    if (sendBtn) sendBtn.style.display = 'none';
   }
 
   function hideStopButton() {
+    if (!sessionBusy) return;
     sessionBusy = false;
-    const btn = panel?.querySelector('#cvStopBtn');
-    if (btn) {
-      btn.style.display = 'none';
-      btn.disabled = false;
-    }
+    const stopBtn = panel?.querySelector('#cvStopBtn');
+    const sendBtn = panel?.querySelector('#cvSendBtn');
+    if (stopBtn) { stopBtn.style.display = 'none'; stopBtn.disabled = false; }
+    if (sendBtn) sendBtn.style.display = '';
   }
 
   function syncStopButton() {
     if (!isOpen || !currentSessionId) return;
+    // Don't show stop button when viewing a subagent thread (read-only)
+    if (activeThreadId) { hideStopButton(); return; }
     if (typeof app === 'undefined') return;
     const session = app.sessions?.get(currentSessionId);
-    if (session && (session.status === 'busy' || session.status === 'working')) {
+    const isBusy = session && (session.status === 'busy' || session.status === 'working');
+    if (isBusy) {
       showStopButton();
     } else {
       hideStopButton();
@@ -882,9 +888,6 @@ const ConversationView = (() => {
           <span class="cv-count"></span>
         </div>
         <div class="cv-header-right">
-          <button class="cv-stop-btn" id="cvStopBtn" onclick="ConversationView.interruptSession()" title="Stop Claude (Ctrl+C)" style="display:none">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
-          </button>
           <button class="cv-close-btn" onclick="ConversationView.close()" title="Back to terminal">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
           </button>
@@ -903,6 +906,9 @@ const ConversationView = (() => {
         <textarea class="cv-input" id="cvInput" rows="1" placeholder="Send a message…" autocomplete="off" autocorrect="on" spellcheck="true"></textarea>
         <button class="cv-send-btn" id="cvSendBtn" onclick="ConversationView.sendMessage()" title="Send" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+        </button>
+        <button class="cv-stop-btn" id="cvStopBtn" onclick="ConversationView.interruptSession()" title="Stop Claude (Escape)" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="2"/></svg>
         </button>
       </div>
     `;
@@ -1207,6 +1213,10 @@ const ConversationView = (() => {
       }
       startAutoRefresh();
 
+      // Immediately sync stop button + typing indicator with current session state
+      syncStopButton();
+      syncTypingIndicator();
+
       // Restore any saved draft text for the incoming session
       restoreDraft(sessionId);
     },
@@ -1393,8 +1403,10 @@ const ConversationView = (() => {
         console.error('[ConversationView] Interrupt failed:', err);
       }
 
+      // Re-sync after a delay — session should transition to idle
       setTimeout(() => {
-        if (btn) btn.disabled = false;
+        syncStopButton();
+        syncTypingIndicator();
       }, 1500);
     },
 

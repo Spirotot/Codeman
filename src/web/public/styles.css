@@ -7513,18 +7513,20 @@ kbd {
 .cv-close-btn:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 
 .cv-stop-btn {
-  background: none;
+  background: #e85d4a;
   border: none;
-  color: #e85d4a;
+  color: #fff;
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   transition: opacity 0.15s, background 0.15s;
 }
-.cv-stop-btn:hover { background: rgba(232, 93, 74, 0.15); }
+.cv-stop-btn:hover { background: #d44a38; }
 .cv-stop-btn:active { opacity: 0.7; }
 .cv-stop-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
 
