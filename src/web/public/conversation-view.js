@@ -69,11 +69,26 @@ const ConversationView = (() => {
     return /^\|[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)*\|?\s*$/.test(line.trim());
   }
 
-  /** Parse a table row into cells (splits on | and trims) */
+  /** Parse a table row into cells (splits on unescaped | and trims) */
   function parseTableRow(line) {
-    // Remove leading/trailing pipes, split on |
+    // Remove leading/trailing unescaped pipes
     const trimmed = line.trim().replace(/^\||\|$/g, '');
-    return trimmed.split('|').map((c) => c.trim());
+    // Split on unescaped | (not preceded by \), then restore \| → |
+    const cells = [];
+    let current = '';
+    for (let i = 0; i < trimmed.length; i++) {
+      if (trimmed[i] === '\\' && trimmed[i + 1] === '|') {
+        current += '|';
+        i++; // skip the |
+      } else if (trimmed[i] === '|') {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += trimmed[i];
+      }
+    }
+    cells.push(current.trim());
+    return cells;
   }
 
   /** Parse column alignments from separator row */
