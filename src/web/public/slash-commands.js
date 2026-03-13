@@ -6,8 +6,9 @@
  * Command sources:
  *   1. Built-in Claude Code commands (/clear, /model, etc.)
  *   2. Global skills (~/.claude/skills/<name>/SKILL.md)
- *   3. User commands (~/.claude/commands/<name>.md)
- *   4. Project commands (<workingDir>/.claude/commands/<name>.md -> /project:name)
+ *   3. Plugin-installed skills (~/.claude/plugins/cache/…/skills/<name>/SKILL.md -> /plugin:skill)
+ *   4. User commands (~/.claude/commands/<name>.md)
+ *   5. Project commands (<workingDir>/.claude/commands/<name>.md -> /project:name)
  *
  * @loadorder 5.5 — loaded after keyboard-accessory.js, before app.js
  */
