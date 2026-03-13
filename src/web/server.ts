@@ -31,6 +31,7 @@ import Fastify, { FastifyInstance, FastifyReply } from 'fastify';
 import fastifyCompress from '@fastify/compress';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, readFileSync, chmodSync } from 'node:fs';
@@ -103,6 +104,7 @@ import {
   registerRespawnRoutes,
   registerRalphRoutes,
   registerPlanRoutes,
+  registerWsRoutes,
 } from './routes/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -565,6 +567,9 @@ export class WebServer extends EventEmitter {
       this.qrAuthFailures = authState.qrAuthFailures;
     }
 
+    // WebSocket support (terminal I/O — low-latency bidirectional channel)
+    await this.app.register(fastifyWebsocket);
+
     // Security headers + CORS
     registerSecurityHeaders(this.app, this.https);
     // Service worker must never be cached — browsers check for SW updates on navigation
@@ -702,6 +707,7 @@ export class WebServer extends EventEmitter {
     registerRespawnRoutes(this.app, ctx);
     registerRalphRoutes(this.app, ctx);
     registerPlanRoutes(this.app, ctx);
+    registerWsRoutes(this.app, ctx);
   }
 
   /**
