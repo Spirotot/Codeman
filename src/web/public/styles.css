@@ -7660,6 +7660,8 @@ ol.cv-list { list-style: decimal; }
 .cv-list .cv-list { margin: 2px 0; }
 .cv-spacer { height: 8px; }
 .cv-hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.cv-blockquote { margin: 6px 0; padding: 4px 12px; border-left: 3px solid rgba(99, 102, 241, 0.4); color: var(--text-muted); }
+.cv-blockquote .cv-p { margin: 2px 0; }
 
 /* Tables */
 .cv-table-wrap { overflow-x: auto; margin: 6px 0; border-radius: 6px; border: 1px solid var(--border); }

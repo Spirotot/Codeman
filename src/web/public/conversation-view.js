@@ -58,250 +58,72 @@ const ConversationView = (() => {
 
   const PAGE_SIZE = 80;
 
-  // ─── Minimal Markdown Renderer ───────────────────────────────
+  // ─── Markdown Renderer (marked + DOMPurify) ─────────────────
 
   function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  /** Check if a line is a markdown table separator (e.g. |---|:---:|---:| ) */
-  function isTableSeparator(line) {
-    return /^\|[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)*\|?\s*$/.test(line.trim());
-  }
-
-  /** Parse a table row into cells (splits on unescaped | and trims) */
-  function parseTableRow(line) {
-    // Remove leading/trailing unescaped pipes
-    const trimmed = line.trim().replace(/^\||\|$/g, '');
-    // Split on unescaped | (not preceded by \), then restore \| → |
-    const cells = [];
-    let current = '';
-    for (let i = 0; i < trimmed.length; i++) {
-      if (trimmed[i] === '\\' && trimmed[i + 1] === '|') {
-        current += '|';
-        i++; // skip the |
-      } else if (trimmed[i] === '|') {
-        cells.push(current.trim());
-        current = '';
-      } else {
-        current += trimmed[i];
-      }
-    }
-    cells.push(current.trim());
-    return cells;
-  }
-
-  /** Parse column alignments from separator row */
-  function parseTableAlign(line) {
-    return parseTableRow(line).map((cell) => {
-      const left = cell.startsWith(':');
-      const right = cell.endsWith(':');
-      if (left && right) return 'center';
-      if (right) return 'right';
-      return 'left';
-    });
-  }
-
-  /** Render accumulated table rows into an HTML <table> */
-  function renderTable(tableLines) {
-    if (tableLines.length < 2) {
-      // Not enough for header + separator — render as plain text
-      return tableLines.map((l) => `<p class="cv-p">${renderInline(l)}</p>`).join('\n');
-    }
-
-    const hasSeparator = isTableSeparator(tableLines[1]);
-    const aligns = hasSeparator ? parseTableAlign(tableLines[1]) : [];
-    const headerCells = parseTableRow(tableLines[0]);
-    const bodyStart = hasSeparator ? 2 : 1;
-
-    let out = '<div class="cv-table-wrap"><table class="cv-table">';
-
-    // Header
-    if (hasSeparator) {
-      out += '<thead><tr>';
-      headerCells.forEach((cell, i) => {
-        const align = aligns[i] && aligns[i] !== 'left' ? ` style="text-align:${aligns[i]}"` : '';
-        out += `<th${align}>${renderInline(cell)}</th>`;
-      });
-      out += '</tr></thead>';
-    }
-
-    // Body
-    out += '<tbody>';
-    for (let i = hasSeparator ? 0 : 0, r = bodyStart; r < tableLines.length; r++) {
-      const cells = parseTableRow(tableLines[r]);
-      out += '<tr>';
-      cells.forEach((cell, ci) => {
-        const align = aligns[ci] && aligns[ci] !== 'left' ? ` style="text-align:${aligns[ci]}"` : '';
-        out += `<td${align}>${renderInline(cell)}</td>`;
-      });
-      out += '</tr>';
-    }
-    out += '</tbody></table></div>';
-    return out;
-  }
-
-  /** Flush accumulated list items into a proper <ul> or <ol> */
-  function flushList(listItems, html) {
-    if (listItems.length === 0) return;
-    // Build nested list structure from indent depths
-    let out = '';
-    const stack = []; // stack of { tag, indent }
-    for (const item of listItems) {
-      const tag = item.ordered ? 'ol' : 'ul';
-      const depth = item.indent;
-      // Close deeper levels
-      while (stack.length > 0 && stack[stack.length - 1].indent > depth) {
-        out += `</li></${stack.pop().tag}>`;
-      }
-      // Same level or switching list type at same level
-      if (stack.length > 0 && stack[stack.length - 1].indent === depth) {
-        if (stack[stack.length - 1].tag !== tag) {
-          out += `</li></${stack.pop().tag}>`;
-          out += `<${tag} class="cv-list">`;
-          stack.push({ tag, indent: depth });
-        } else {
-          out += '</li>';
+  // Configure marked with custom renderer to apply CV CSS classes
+  const _cvMarked = new marked.Marked({
+    gfm: true,
+    breaks: false,
+    renderer: {
+      heading({ tokens, depth }) {
+        return `<h${depth} class="cv-h">${this.parser.parseInline(tokens)}</h${depth}>\n`;
+      },
+      paragraph({ tokens }) {
+        return `<p class="cv-p">${this.parser.parseInline(tokens)}</p>\n`;
+      },
+      list({ ordered, start, items }) {
+        const tag = ordered ? 'ol' : 'ul';
+        const startAttr = ordered && start !== 1 ? ` start="${start}"` : '';
+        let body = '';
+        for (const item of items) body += this.listitem(item);
+        return `<${tag} class="cv-list"${startAttr}>${body}</${tag}>\n`;
+      },
+      table({ header, rows }) {
+        let out = '<div class="cv-table-wrap"><table class="cv-table"><thead><tr>';
+        for (const cell of header) {
+          const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+          out += `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
         }
-      }
-      // Open deeper level
-      if (stack.length === 0 || stack[stack.length - 1].indent < depth) {
-        out += `<${tag} class="cv-list">`;
-        stack.push({ tag, indent: depth });
-      }
-      out += `<li>${renderInline(item.text)}`;
-    }
-    // Close remaining open tags
-    while (stack.length > 0) {
-      out += `</li></${stack.pop().tag}>`;
-    }
-    html.push(out);
-    listItems.length = 0;
-  }
-
-  /** Flush accumulated table lines into rendered HTML */
-  function flushTable(tableLines, html) {
-    if (tableLines.length === 0) return;
-    html.push(renderTable(tableLines));
-    tableLines.length = 0;
-  }
+        out += '</tr></thead><tbody>';
+        for (const row of rows) {
+          out += '<tr>';
+          for (const cell of row) {
+            const align = cell.align ? ` style="text-align:${cell.align}"` : '';
+            out += `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
+          }
+          out += '</tr>';
+        }
+        out += '</tbody></table></div>\n';
+        return out;
+      },
+      code({ text, lang }) {
+        const langClass = lang ? `lang-${lang}` : '';
+        return `<pre class="cv-code"><code class="${langClass}">${text}</code></pre>\n`;
+      },
+      codespan({ text }) {
+        return `<code class="cv-inline-code">${text}</code>`;
+      },
+      hr() {
+        return '<hr class="cv-hr">\n';
+      },
+      blockquote({ tokens }) {
+        return `<blockquote class="cv-blockquote">${this.parser.parse(tokens)}</blockquote>\n`;
+      },
+      link({ href, title, tokens }) {
+        const text = this.parser.parseInline(tokens);
+        const titleAttr = title ? ` title="${title}"` : '';
+        return `<a href="${href}"${titleAttr} target="_blank" rel="noopener">${text}</a>`;
+      },
+    },
+  });
 
   function renderMarkdown(text) {
     if (!text) return '';
-    const lines = text.split('\n');
-    const html = [];
-    let inCodeBlock = false;
-    let codeLang = '';
-    let codeLines = [];
-    let pendingList = []; // accumulated list items
-    let pendingTable = []; // accumulated table lines
-
-    for (let li = 0; li < lines.length; li++) {
-      const line = lines[li];
-      // Code block fence
-      if (line.trimStart().startsWith('```')) {
-        flushList(pendingList, html);
-        flushTable(pendingTable, html);
-        if (inCodeBlock) {
-          html.push(
-            `<pre class="cv-code"><code class="lang-${escapeHtml(codeLang)}">${escapeHtml(codeLines.join('\n'))}</code></pre>`
-          );
-          codeLines = [];
-          inCodeBlock = false;
-          codeLang = '';
-        } else {
-          inCodeBlock = true;
-          codeLang = line.trimStart().slice(3).trim() || 'text';
-        }
-        continue;
-      }
-      if (inCodeBlock) {
-        codeLines.push(line);
-        continue;
-      }
-
-      // Table rows — accumulate consecutive lines starting with |
-      if (line.trim().startsWith('|') && line.includes('|', line.indexOf('|') + 1)) {
-        flushList(pendingList, html);
-        pendingTable.push(line);
-        continue;
-      }
-      if (pendingTable.length > 0) flushTable(pendingTable, html);
-
-      // Headers
-      const headerMatch = line.match(/^(#{1,4})\s+(.+)/);
-      if (headerMatch) {
-        flushList(pendingList, html);
-        const level = headerMatch[1].length;
-        html.push(`<h${level} class="cv-h">${renderInline(headerMatch[2])}</h${level}>`);
-        continue;
-      }
-
-      // Unordered list items
-      if (/^\s*[-*]\s/.test(line)) {
-        const indent = line.match(/^(\s*)/)[1].length;
-        pendingList.push({ ordered: false, indent, text: line.replace(/^\s*[-*]\s/, '') });
-        continue;
-      }
-      // Ordered list items
-      if (/^\s*\d+\.\s/.test(line)) {
-        const indent = line.match(/^(\s*)/)[1].length;
-        pendingList.push({ ordered: true, indent, text: line.replace(/^\s*\d+\.\s/, '') });
-        continue;
-      }
-      // Empty line — if a list is pending, swallow blank lines that are followed
-      // by more list items (loose list style). Without this, each item separated
-      // by a blank line gets its own <ol>, resetting the counter to 1 every time.
-      if (!line.trim()) {
-        if (pendingList.length > 0) {
-          let nextIsListItem = false;
-          for (let look = li + 1; look < lines.length; look++) {
-            if (!lines[look].trim()) continue;
-            nextIsListItem = /^\s*[-*]\s/.test(lines[look]) || /^\s*\d+\.\s/.test(lines[look]);
-            break;
-          }
-          if (nextIsListItem) continue;
-          flushList(pendingList, html);
-        }
-        html.push('<div class="cv-spacer"></div>');
-        continue;
-      }
-
-      if (pendingList.length > 0) flushList(pendingList, html);
-
-      // Horizontal rule
-      if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
-        html.push('<hr class="cv-hr">');
-        continue;
-      }
-
-      // Regular paragraph
-      html.push(`<p class="cv-p">${renderInline(line)}</p>`);
-    }
-
-    // Flush any remaining accumulated blocks
-    flushList(pendingList, html);
-    flushTable(pendingTable, html);
-
-    // Unclosed code block
-    if (inCodeBlock && codeLines.length > 0) {
-      html.push(`<pre class="cv-code"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
-    }
-
-    return html.join('\n');
-  }
-
-  function renderInline(text) {
-    let s = escapeHtml(text);
-    // Bold
-    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    // Italic
-    s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
-    // Inline code
-    s = s.replace(/`([^`]+)`/g, '<code class="cv-inline-code">$1</code>');
-    // Links
-    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    return s;
+    return DOMPurify.sanitize(_cvMarked.parse(text));
   }
 
   // ─── AskUserQuestion Rendering ─────────────────────────────────

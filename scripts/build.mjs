@@ -43,6 +43,8 @@ run('xterm-addon-fit', 'npx esbuild node_modules/@xterm/addon-fit/lib/addon-fit.
 run('xterm-addon-webgl', 'cp node_modules/@xterm/addon-webgl/lib/addon-webgl.js dist/web/public/vendor/xterm-addon-webgl.min.js');
 run('xterm-addon-unicode11', 'npx esbuild node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js --minify --outfile=dist/web/public/vendor/xterm-addon-unicode11.min.js');
 run('xterm-zerolag-input', 'npx esbuild packages/xterm-zerolag-input/src/zerolag-input-addon.ts --bundle --minify --format=iife --global-name=XtermZerolagInput --outfile=dist/web/public/vendor/xterm-zerolag-input.js');
+run('marked', 'npx esbuild node_modules/marked/lib/marked.umd.js --minify --outfile=dist/web/public/vendor/marked.min.js');
+run('dompurify', 'cp node_modules/dompurify/dist/purify.min.js dist/web/public/vendor/purify.min.js');
 
 // Append global aliases so app.js can use `new LocalEchoOverlay(terminal)`
 appendFileSync(
@@ -88,6 +90,8 @@ console.log('\n[build] content-hash cache busting');
     'vendor/xterm-addon-fit.min.js',
     'vendor/xterm-addon-webgl.min.js',
     'vendor/xterm-addon-unicode11.min.js',
+    'vendor/marked.min.js',
+    'vendor/purify.min.js',
   ];
   const manifest = {};
   for (const file of HASHABLE) {
