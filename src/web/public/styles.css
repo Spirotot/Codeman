@@ -7808,6 +7808,11 @@ ol.cv-list { list-style: decimal; }
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px; padding: 6px 10px;
+  cursor: pointer; transition: background 0.15s, border-color 0.15s;
+}
+.cv-ask-option:hover {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.4);
 }
 .cv-ask-option-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .cv-ask-option-desc { font-size: 11px; color: var(--text-muted); }

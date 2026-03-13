@@ -300,8 +300,10 @@ const ConversationView = (() => {
       html += `<div class="cv-ask-question">${escapeHtml(q.question)}</div>`;
       if (q.options && q.options.length) {
         html += '<div class="cv-ask-options">';
-        for (const opt of q.options) {
-          html += `<div class="cv-ask-option"><span class="cv-ask-option-label">${escapeHtml(opt.label)}</span>`;
+        for (let i = 0; i < q.options.length; i++) {
+          const opt = q.options[i];
+          html += `<div class="cv-ask-option" onclick="ConversationView.selectOption(${i}, ${q.options.length})" role="button" tabindex="0">`;
+          html += `<span class="cv-ask-option-label">${escapeHtml(opt.label)}</span>`;
           if (opt.description) html += `<span class="cv-ask-option-desc">${escapeHtml(opt.description)}</span>`;
           html += '</div>';
         }
@@ -1316,6 +1318,23 @@ const ConversationView = (() => {
         input.disabled = false;
         if (sendBtn) sendBtn.disabled = true; // Reset until next input
         input.focus();
+      }
+    },
+
+    /** Select an option in an AskUserQuestion elicitation dialog */
+    async selectOption(index, _total) {
+      if (!currentSessionId) return;
+      // Claude Code's Ink UI: first option is pre-selected, Down arrow to navigate
+      const downs = '\x1b[B'.repeat(index);
+      const input = downs + '\r';
+      try {
+        await fetch(`/api/sessions/${currentSessionId}/input`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input, useMux: false }),
+        });
+      } catch (err) {
+        console.error('[ConversationView] selectOption error:', err);
       }
     },
 
