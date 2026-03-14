@@ -1036,19 +1036,12 @@
             <div class="form-row">
               <label>Default Model</label>
               <select id="appSettingsDefaultModel" class="form-select">
+                <option value="">CLI Default (no override)</option>
                 <option value="opus">Opus (Most capable)</option>
                 <option value="sonnet">Sonnet (Balanced)</option>
                 <option value="haiku">Haiku (Fast & cheap)</option>
               </select>
-              <span class="form-hint">Model used for execution tasks. Optimizer suggestions are advisory only.</span>
-            </div>
-            <div class="form-row form-row-switch">
-              <label>Show Optimizer Recommendations</label>
-              <label class="switch">
-                <input type="checkbox" id="appSettingsShowModelRecommendations" checked>
-                <span class="slider"></span>
-              </label>
-              <span class="form-hint">Show what the optimizer recommends (doesn't override your choice)</span>
+              <span class="form-hint">Model used for sessions. "CLI Default" lets Claude Code decide.</span>
             </div>
             <div class="form-section-header">Agent Type Overrides</div>
             <p class="form-hint" style="margin: 0 0 12px 0;">Optionally set specific models for each task type. Leave as "Use Default" to use your default model.</p>

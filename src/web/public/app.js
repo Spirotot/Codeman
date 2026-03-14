@@ -7826,12 +7826,7 @@ class CodemanApp {
         // Default model
         const defaultModelEl = document.getElementById('appSettingsDefaultModel');
         if (defaultModelEl) {
-          defaultModelEl.value = config.defaultModel || 'opus';
-        }
-        // Show recommendations
-        const showRecsEl = document.getElementById('appSettingsShowModelRecommendations');
-        if (showRecsEl) {
-          showRecsEl.checked = config.showRecommendations ?? true;
+          defaultModelEl.value = config.defaultModel || '';
         }
         // Agent type overrides
         const overrides = config.agentTypeOverrides || {};
@@ -7852,7 +7847,6 @@ class CodemanApp {
   // Save model configuration from settings modal to server
   async saveModelConfigFromSettings() {
     const defaultModelEl = document.getElementById('appSettingsDefaultModel');
-    const showRecsEl = document.getElementById('appSettingsShowModelRecommendations');
     const exploreEl = document.getElementById('appSettingsModelExplore');
     const implementEl = document.getElementById('appSettingsModelImplement');
     const testEl = document.getElementById('appSettingsModelTest');
@@ -7865,8 +7859,7 @@ class CodemanApp {
     if (reviewEl?.value) agentTypeOverrides.review = reviewEl.value;
 
     const config = {
-      defaultModel: defaultModelEl?.value || 'opus',
-      showRecommendations: showRecsEl?.checked ?? true,
+      defaultModel: defaultModelEl?.value || '',
       agentTypeOverrides,
     };
 

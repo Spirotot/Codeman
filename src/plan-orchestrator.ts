@@ -115,7 +115,7 @@ function tryParseJSON(jsonString: string): { success: boolean; data?: unknown; e
 // Constants
 // ============================================================================
 
-const DEFAULT_MODEL = 'opus';
+const DEFAULT_MODEL = '';
 
 // ============================================================================
 // Main Orchestrator Class
