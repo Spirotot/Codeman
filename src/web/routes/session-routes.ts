@@ -1127,145 +1127,16 @@ export function registerSessionRoutes(
       // Projects dir may not exist
     }
 
-    // No-JSONL fallback: when claudeSessionId doesn't match any JSONL file
-    // (e.g., session was just created, or /resume generated a new Claude session ID
-    // that hasn't been detected yet). Scan for the newest unclaimed JSONL matching
-    // the session's workingDir — but ONLY if the JSONL was created after the Codeman
-    // session started (prevents a new session from stealing an old session's history).
-    if (!jsonlPath && session?.workingDir) {
-      try {
-        // Claim both codeman IDs and Claude session IDs — Claude uses --session-id <codeman-id>
-        // so JSONL files are often named after the codeman session ID, not a separate Claude ID.
-        const claimedByOthers = new Set<string>();
-        for (const [otherId, otherSession] of ctx.sessions) {
-          if (otherId === id) continue;
-          claimedByOthers.add(otherId);
-          if (otherSession.claudeSessionId) claimedByOthers.add(otherSession.claudeSessionId);
-        }
-
-        const sessionCreatedAt = session.createdAt || 0;
-        const projectDirs = await fs.readdir(projectsDir);
-        let bestPath: string | null = null;
-        let bestMtime = 0;
-
-        for (const projDir of projectDirs) {
-          const dirPath = join(projectsDir, projDir);
-          let files: string[];
-          try {
-            files = await fs.readdir(dirPath);
-          } catch {
-            continue;
-          }
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) continue;
-            const candidateId = file.replace('.jsonl', '');
-            if (claimedByOthers.has(candidateId)) continue;
-
-            const candidatePath = join(dirPath, file);
-            try {
-              const cStat = await fs.stat(candidatePath);
-              if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
-              // Only consider JSONL files created after this session started (with 5s grace)
-              if (cStat.birthtimeMs < sessionCreatedAt - 5000) continue;
-              // Verify matching cwd and real conversation content (not just hook artifacts)
-              const fd = await fs.open(candidatePath, 'r');
-              const buf = Buffer.alloc(8192);
-              const { bytesRead } = await fd.read(buf, 0, 8192, 0);
-              await fd.close();
-              const head = buf.toString('utf-8', 0, bytesRead);
-              if (!head.includes(`"cwd":"${session.workingDir}"`)) continue;
-              // Must have at least one assistant message — filters out hook/command artifacts
-              if (!head.includes('"type":"assistant"')) continue;
-              bestPath = candidatePath;
-              bestMtime = cStat.mtimeMs;
-            } catch {
-              // skip
-            }
-          }
-        }
-
-        if (bestPath) {
-          const newId = bestPath.split('/').pop()?.replace('.jsonl', '') || '';
-          if (newId) {
-            session.restoreClaudeSessionId(newId);
-            ctx.persistSessionState(session);
-            jsonlPath = bestPath;
-          }
-        }
-      } catch {
-        // scan failed
-      }
-    }
-
-    // Staleness fallback: if the JSONL hasn't been modified in 2+ minutes,
-    // Claude may have done /clear internally, creating a new session ID.
-    // Scan for newer JSONL files that were CREATED after the old one went stale,
-    // have matching cwd, and aren't claimed by other Codeman sessions.
-    if (jsonlPath && session) {
-      try {
-        const jsonlStat = await fs.stat(jsonlPath);
-        const staleMs = Date.now() - jsonlStat.mtimeMs;
-        if (staleMs > 120_000) {
-          const projDir = dirname(jsonlPath);
-          const files = await fs.readdir(projDir);
-
-          // Claim both codeman IDs and Claude session IDs (see no-JSONL fallback comment)
-          const claimedByOthers = new Set<string>();
-          for (const [otherId, otherSession] of ctx.sessions) {
-            if (otherId === id) continue;
-            claimedByOthers.add(otherId);
-            if (otherSession.claudeSessionId) claimedByOthers.add(otherSession.claudeSessionId);
-          }
-
-          let bestPath = jsonlPath;
-          let bestMtime = jsonlStat.mtimeMs;
-          const sessionCwd = session.workingDir;
-
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) continue;
-            const candidateId = file.replace('.jsonl', '');
-            if (candidateId === effectiveSessionId) continue;
-            if (claimedByOthers.has(candidateId)) continue;
-
-            const candidatePath = join(projDir, file);
-            try {
-              const cStat = await fs.stat(candidatePath);
-              // Must be newer than current and have real content
-              if (cStat.mtimeMs <= bestMtime || cStat.size < 1000) continue;
-              // Must have been CREATED after old JSONL went stale (not a pre-existing session)
-              if (cStat.birthtimeMs < jsonlStat.mtimeMs - 60_000) continue;
-              // Must be recently active (written to in last 60s) — this filters out
-              // stale artifacts from quick commands like /para:next or /reload-plugins
-              // that create tiny JSONL files and then stop writing.
-              if (Date.now() - cStat.mtimeMs > 60_000) continue;
-              // Verify matching cwd
-              if (sessionCwd) {
-                const fd = await fs.open(candidatePath, 'r');
-                const buf = Buffer.alloc(2048);
-                await fd.read(buf, 0, 2048, 0);
-                await fd.close();
-                if (!buf.toString('utf-8').includes(`"cwd":"${sessionCwd}"`)) continue;
-              }
-              bestPath = candidatePath;
-              bestMtime = cStat.mtimeMs;
-            } catch {
-              // skip
-            }
-          }
-
-          if (bestPath !== jsonlPath) {
-            const newId = bestPath.split('/').pop()?.replace('.jsonl', '') || '';
-            if (newId) {
-              session.restoreClaudeSessionId(newId);
-              ctx.persistSessionState(session);
-              jsonlPath = bestPath;
-            }
-          }
-        }
-      } catch {
-        // stat/scan failed — proceed with original path
-      }
-    }
+    // NOTE: Previously there were two cwd-based heuristic fallbacks here:
+    // 1. "No-JSONL fallback" — scanned for unclaimed JSONL files matching workingDir
+    // 2. "Staleness fallback" — looked for newer JSONL when current was stale (>2min)
+    //
+    // Both were removed because cwd matching is unreliable when multiple sessions
+    // share the same workingDir (e.g., ~/PARA). The heuristics would "steal"
+    // another session's JSONL after compaction or /clear created a new session ID
+    // that wasn't yet known to Codeman. The authoritative path for discovering
+    // new session IDs is the PTY output parser (session.ts ~L1639), which updates
+    // claudeSessionId when Claude outputs JSON messages with a new session_id.
 
     // Also check for subagent JSONL if requested — use SubagentWatcher's known path
     if (subagentId) {
