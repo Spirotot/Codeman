@@ -91,6 +91,7 @@ import { MAX_CONCURRENT_SESSIONS, MAX_SSE_CLIENTS } from '../config/map-limits.j
 import { SseEvent } from './sse-events.js';
 import type { ScheduledRun } from './ports/index.js';
 import { registerAuthMiddleware, registerSecurityHeaders } from './middleware/auth.js';
+import { registerOidcAuth, getOidcConfig } from './middleware/oidc.js';
 import {
   registerPushRoutes,
   registerTeamRoutes,
@@ -564,6 +565,16 @@ export class WebServer extends EventEmitter {
       this.authSessions = authState.authSessions;
       this.authFailures = authState.authFailures;
       this.qrAuthFailures = authState.qrAuthFailures;
+    }
+
+    // Native OIDC auth (Authorization Code flow with PKCE)
+    // Takes priority over Basic Auth when configured. Requires authSessions
+    // store — if neither CODEMAN_PASSWORD nor OIDC is set, no auth is active.
+    if (getOidcConfig() && this.authSessions) {
+      const oidcActive = await registerOidcAuth(this.app, this.authSessions, this.https);
+      if (!oidcActive) {
+        console.warn('[server] OIDC configured but discovery failed — falling back to Basic Auth');
+      }
     }
 
     // WebSocket support (terminal I/O — low-latency bidirectional channel)

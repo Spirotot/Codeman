@@ -49,8 +49,9 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean): Au
 
   const trustProxyAuth =
     process.env.CODEMAN_TRUST_PROXY_AUTH === '1' || process.env.CODEMAN_TRUST_PROXY_AUTH === 'true';
+  const hasOidc = !!(process.env.CODEMAN_OIDC_ISSUER && process.env.CODEMAN_OIDC_CLIENT_ID);
   const authPassword = process.env.CODEMAN_PASSWORD;
-  if (!authPassword && !trustProxyAuth) return state;
+  if (!authPassword && !trustProxyAuth && !hasOidc) return state;
 
   const authUsername = process.env.CODEMAN_USERNAME || 'admin';
   const expectedHeader = authPassword
@@ -153,7 +154,11 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean): Au
     // Check Basic Auth header (timing-safe comparison to prevent side-channel attacks)
     const auth = req.headers.authorization;
     if (!expectedHeader) {
-      // No password configured and OIDC didn't match — reject
+      // No password configured — if native OIDC is active, let its hook handle it
+      if (hasOidc) {
+        done();
+        return;
+      }
       reply.header('WWW-Authenticate', 'Basic realm="Codeman"');
       reply.code(401).send('Unauthorized');
       return;
@@ -191,8 +196,16 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean): Au
       return;
     }
 
-    // Auth failed — track failure count
-    authFailures.set(clientIp, failures + 1);
+    // If native OIDC is active and no Basic Auth credentials were sent, let OIDC handle it
+    if (hasOidc && !auth) {
+      done();
+      return;
+    }
+
+    // Auth failed — track failure count (only for actual failed attempts, not missing credentials)
+    if (auth) {
+      authFailures.set(clientIp, failures + 1);
+    }
 
     reply.header('WWW-Authenticate', 'Basic realm="Codeman"');
     reply.code(401).send('Unauthorized');
