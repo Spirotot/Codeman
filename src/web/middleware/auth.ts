@@ -19,6 +19,11 @@ import {
   AUTH_FAILURE_WINDOW_MS,
 } from '../../config/auth-config.js';
 
+// OIDC proxy header names (set by traefikoidc after Pocket ID authentication)
+const OIDC_HEADER_USER = 'x-forwarded-user';
+const OIDC_HEADER_EMAIL = 'x-forwarded-email';
+const OIDC_HEADER_GROUPS = 'x-forwarded-groups';
+
 // Auth session cookie name
 export const AUTH_COOKIE_NAME = 'codeman_session';
 
@@ -42,11 +47,15 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean): Au
     qrAuthFailures: null,
   };
 
+  const trustProxyAuth =
+    process.env.CODEMAN_TRUST_PROXY_AUTH === '1' || process.env.CODEMAN_TRUST_PROXY_AUTH === 'true';
   const authPassword = process.env.CODEMAN_PASSWORD;
-  if (!authPassword) return state;
+  if (!authPassword && !trustProxyAuth) return state;
 
   const authUsername = process.env.CODEMAN_USERNAME || 'admin';
-  const expectedHeader = 'Basic ' + Buffer.from(`${authUsername}:${authPassword}`).toString('base64');
+  const expectedHeader = authPassword
+    ? 'Basic ' + Buffer.from(`${authUsername}:${authPassword}`).toString('base64')
+    : '';
 
   // Session token store — active sessions extend TTL on access
   state.authSessions = new StaleExpirationMap<string, AuthSessionRecord>({
@@ -105,8 +114,50 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean): Au
       return;
     }
 
+    // Check OIDC proxy headers (set by traefikoidc after Pocket ID authentication)
+    if (trustProxyAuth) {
+      const oidcUser = req.headers[OIDC_HEADER_USER] as string | undefined;
+      if (oidcUser) {
+        const oidcEmail = (req.headers[OIDC_HEADER_EMAIL] as string) || undefined;
+        const oidcGroups = (req.headers[OIDC_HEADER_GROUPS] as string) || undefined;
+
+        // Create or refresh session for this OIDC user
+        const token = randomBytes(32).toString('hex');
+        if (authSessions.size >= MAX_AUTH_SESSIONS) {
+          const oldestKey = authSessions.keys().next().value;
+          if (oldestKey !== undefined) authSessions.delete(oldestKey);
+        }
+        authSessions.set(token, {
+          ip: clientIp,
+          ua: req.headers['user-agent'] ?? '',
+          createdAt: Date.now(),
+          method: 'oidc',
+          user: oidcUser,
+          email: oidcEmail,
+          groups: oidcGroups ? oidcGroups.split(',').map((g) => g.trim()) : undefined,
+        });
+        authFailures.delete(clientIp);
+
+        reply.setCookie(AUTH_COOKIE_NAME, token, {
+          httpOnly: true,
+          secure: https,
+          sameSite: 'lax',
+          maxAge: AUTH_SESSION_TTL_MS / 1000,
+          path: '/',
+        });
+        done();
+        return;
+      }
+    }
+
     // Check Basic Auth header (timing-safe comparison to prevent side-channel attacks)
     const auth = req.headers.authorization;
+    if (!expectedHeader) {
+      // No password configured and OIDC didn't match — reject
+      reply.header('WWW-Authenticate', 'Basic realm="Codeman"');
+      reply.code(401).send('Unauthorized');
+      return;
+    }
     const authBuf = Buffer.from(auth ?? '');
     const expectedBuf = Buffer.from(expectedHeader);
     if (authBuf.length === expectedBuf.length && timingSafeEqual(authBuf, expectedBuf)) {

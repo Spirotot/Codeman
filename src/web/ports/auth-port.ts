@@ -10,7 +10,13 @@ export interface AuthSessionRecord {
   ip: string;
   ua: string;
   createdAt: number;
-  method: 'qr' | 'basic';
+  method: 'qr' | 'basic' | 'oidc';
+  /** Authenticated user identity (email or username from OIDC proxy headers) */
+  user?: string;
+  /** User email from OIDC proxy headers */
+  email?: string;
+  /** User groups from OIDC proxy headers (comma-separated in header, parsed to array) */
+  groups?: string[];
 }
 
 export interface AuthPort {

@@ -100,6 +100,26 @@ export function registerSystemRoutes(
 
   app.get('/api/status', async () => ctx.getLightState());
 
+  // ========== Current User ==========
+
+  app.get('/api/me', async (req) => {
+    const sessionToken = req.cookies[AUTH_COOKIE_NAME];
+    if (!sessionToken || !ctx.authSessions) {
+      return { authenticated: false };
+    }
+    const record = ctx.authSessions.get(sessionToken);
+    if (!record) {
+      return { authenticated: false };
+    }
+    return {
+      authenticated: true,
+      method: record.method,
+      user: record.user ?? null,
+      email: record.email ?? null,
+      groups: record.groups ?? [],
+    };
+  });
+
   // ========== Tunnel ==========
 
   app.get('/api/tunnel/status', async () => ctx.tunnelManager.getStatus());
