@@ -453,7 +453,13 @@ const ConversationView = (() => {
     if (!cache) return;
     const targetContainer = cache.el;
     try {
-      let url = `/api/sessions/${fetchSessionId}/conversation?limit=20`;
+      // Fetch enough messages to cover bursts between polls. During tool-heavy
+      // sequences Claude can produce 20+ messages in a single turn. A small
+      // limit (e.g. 20) means the newest-first response may not reach back to
+      // cache.newestIndex, creating a permanent gap of lost messages.
+      const gap = Math.max(0, (cache.totalMessages > 0 ? cache.totalMessages : 0));
+      const fetchLimit = Math.min(Math.max(80, gap), 200);
+      let url = `/api/sessions/${fetchSessionId}/conversation?limit=${fetchLimit}`;
       if (fetchThreadId) url += `&subagent=${encodeURIComponent(fetchThreadId)}`;
       const res = await fetch(url);
       if (!res.ok) return;
