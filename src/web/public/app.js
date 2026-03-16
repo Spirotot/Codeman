@@ -2197,9 +2197,14 @@ class CodemanApp {
         });
       }
 
-      // Fire-and-forget resize — don't await to avoid blocking UI.
-      // The resize triggers an Ink redraw in Claude which streams back via SSE.
-      this.sendResize(sessionId);
+      // Skip resize when conversation view is open — terminal is display:none,
+      // fitAddon would compute 0×0 dimensions and destroy content.
+      const cvOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
+      if (!cvOpen) {
+        // Fire-and-forget resize — don't await to avoid blocking UI.
+        // The resize triggers an Ink redraw in Claude which streams back via SSE.
+        this.sendResize(sessionId);
+      }
 
       // Defer secondary panel updates so they don't block the main thread
       // after terminal content is already visible.
@@ -2247,6 +2252,23 @@ class CodemanApp {
 
         // Update subagent window visibility for active session
         this.updateSubagentWindowVisibility();
+
+        // Update conversation view for the new session
+        if (typeof ConversationView !== 'undefined') {
+          if (ConversationView.isOpen()) {
+            ConversationView.open(sessionId);
+          } else if (!this._forceTerminalView && this._isAutoConversationView()) {
+            ConversationView.open(sessionId);
+          }
+        }
+        this._updateConversationToggleBtn();
+        this._initOrientationAutoSwitch();
+
+        // Invalidate slash command cache (project commands may differ per session)
+        if (typeof SlashCommands !== 'undefined') {
+          SlashCommands.invalidate();
+          SlashCommands.loadCustomCommands(sessionId);
+        }
 
         // Load file browser if enabled
         const settings = this.loadAppSettingsFromStorage();
@@ -2592,6 +2614,69 @@ class CodemanApp {
         ? `Lifetime: ${this.globalStats.totalSessionsCreated} sessions created${showCost ? '\nEstimated cost based on Claude Opus pricing' : ''}`
         : `Token usage across active sessions${showCost ? '\nEstimated cost based on Claude Opus pricing' : ''}`;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Conversation View integration
+  // ═══════════════════════════════════════════════════════════════
+
+  toggleConversationView() {
+    if (typeof ConversationView === 'undefined') return;
+    if (ConversationView.isOpen()) {
+      ConversationView.close();
+      this._forceTerminalView = true;
+      this.terminal?.focus();
+    } else if (this.activeSessionId) {
+      ConversationView.open(this.activeSessionId);
+      this._forceTerminalView = false;
+    }
+    this._updateConversationToggleBtn();
+  }
+
+  _updateConversationToggleBtn() {
+    const btn = document.getElementById('cvToggleBtn');
+    if (!btn) return;
+    btn.style.display = this.activeSessionId ? '' : 'none';
+    const isOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
+    btn.classList.toggle('active', isOpen);
+    btn.title = isOpen ? 'Show terminal' : 'Conversation view';
+    btn.ariaLabel = btn.title;
+    btn.innerHTML = isOpen
+      ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8h10M7 12h6"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+  }
+
+  _isAutoConversationView() {
+    if (!MobileDetection.isTouchDevice()) return false;
+    const settings = this.loadAppSettingsFromStorage();
+    if (settings.autoConversationView === false) return false;
+    return window.matchMedia('(orientation: portrait)').matches;
+  }
+
+  _initOrientationAutoSwitch() {
+    if (this._orientationListenerAttached) return;
+    this._orientationListenerAttached = true;
+    const mq = window.matchMedia('(orientation: portrait)');
+    mq.addEventListener('change', (e) => {
+      if (typeof ConversationView === 'undefined') return;
+      if (this._forceTerminalView) return;
+      const settings = this.loadAppSettingsFromStorage();
+      if (settings.autoConversationView === false) return;
+      if (!this.activeSessionId) return;
+
+      if (e.matches) {
+        if (!ConversationView.isOpen()) {
+          ConversationView.open(this.activeSessionId);
+          this._updateConversationToggleBtn();
+        }
+      } else {
+        if (ConversationView.isOpen()) {
+          ConversationView.close();
+          this._updateConversationToggleBtn();
+          this.terminal?.focus();
+        }
+      }
+    });
   }
 
 }

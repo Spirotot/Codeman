@@ -243,6 +243,10 @@ Object.assign(CodemanApp.prototype, {
       }
       this._resizeTimeout = setTimeout(() => {
         this._resizeTimeout = null;
+        // Skip resize when conversation view is open — terminal is display:none,
+        // fitAddon computes 0×0 dimensions and destroys scrollback content.
+        const cvOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
+        if (cvOpen) return;
         // Fit xterm.js to final container dimensions
         if (this.fitAddon) {
           this.fitAddon.fit();
