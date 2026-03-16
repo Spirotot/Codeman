@@ -14,7 +14,7 @@
  */
 
 // eslint-disable-next-line no-unused-vars
-const SlashCommands = (() => {
+var SlashCommands = (() => {
   // ── Built-in Claude Code commands ────────────────────────────
   const BUILTIN = [
     { name: '/bug', desc: 'Report a bug' },
