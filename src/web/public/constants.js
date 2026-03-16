@@ -14,10 +14,8 @@
  * @globals {Array} BUILTIN_RESPAWN_PRESETS - Built-in respawn configuration presets
  *
  * @dependency None (first in load order)
- * @loadorder 1 of 15 — constants.js → mobile-handlers.js → voice-input.js → notification-manager.js
- *   → keyboard-accessory.js → input-cjk.js → app.js → terminal-ui.js → respawn-ui.js
- *   → ralph-panel.js → settings-ui.js → panels-ui.js → session-ui.js → ralph-wizard.js
- *   → api-client.js → subagent-windows.js
+ * @loadorder 1 of 9 — constants.js → mobile-handlers.js → voice-input.js → notification-manager.js
+ *   → keyboard-accessory.js → app.js → ralph-wizard.js → api-client.js → subagent-windows.js
  */
 
 // Codeman — Shared constants and utility functions for frontend modules

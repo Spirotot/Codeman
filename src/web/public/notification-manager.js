@@ -22,7 +22,7 @@
  *
  * @dependency constants.js (STUCK_THRESHOLD_DEFAULT_MS, timing constants)
  * @dependency mobile-handlers.js (MobileDetection.getDeviceType for device-specific defaults)
- * @loadorder 4 of 15 — loaded after voice-input.js, before keyboard-accessory.js
+ * @loadorder 4 of 9 — loaded after voice-input.js, before keyboard-accessory.js
  */
 
 // Codeman — Multi-layer notification system

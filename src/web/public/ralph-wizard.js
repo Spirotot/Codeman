@@ -19,7 +19,7 @@
  * @dependency app.js (CodemanApp class must be defined)
  * @dependency keyboard-accessory.js (FocusTrap class for modal focus management)
  * @dependency constants.js (escapeHtml)
- * @loadorder 13 of 15 — loaded after session-ui.js, before api-client.js
+ * @loadorder 7 of 9 — loaded after app.js, before api-client.js
  */
 
 // ═══════════════════════════════════════════════════════════════

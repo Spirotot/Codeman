@@ -746,60 +746,6 @@ html.mobile-init .file-browser-panel {
   }
 
   /* Mobile case settings gear button - next to Run */
-  .btn-case-settings-mobile {
-    display: inline-flex !important;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 4px;
-    color: #9ca3af;
-    cursor: pointer;
-    flex-shrink: 0;
-    order: 1; /* Next to Run */
-  }
-
-  .btn-case-settings-mobile:active {
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-  }
-
-  /* Mobile case settings popover */
-  .case-settings-popover-mobile {
-    position: fixed;
-    bottom: calc(var(--safe-area-bottom) + 46px);
-    left: 8px;
-    right: 8px;
-    background: #1e1e1e;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    padding: 0.6rem 0.75rem;
-    z-index: 1000;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-    display: block;
-  }
-
-  .case-settings-popover-mobile.hidden {
-    display: none !important;
-  }
-
-  .case-settings-popover-mobile .checkbox-inline {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.75rem;
-    color: #e5e7eb;
-  }
-
-  .case-settings-popover-mobile .form-hint {
-    display: block;
-    margin-top: 0.2rem;
-    font-size: 0.6rem;
-    color: #6b7280;
-  }
-
   /* Keyboard Accessory Bar - quick actions above keyboard */
   .keyboard-accessory-bar {
     display: none;
@@ -899,9 +845,7 @@ html.mobile-init .file-browser-panel {
     display: none !important;
   }
 
-  .btn-case-settings {
-    display: none !important;
-  }
+
 
   /* When keyboard is visible, also move accessory bar up */
   .keyboard-visible .keyboard-accessory-bar.visible {
@@ -2064,5 +2008,27 @@ html.mobile-init .file-browser-panel {
   .subagent-dropdown-trigger:active + .subagent-dropdown-menu,
   .subagent-dropdown-trigger:focus + .subagent-dropdown-menu {
     display: block;
+  }
+}
+
+/* ============================================================================
+   PWA Standalone Mode (Home Screen / display: standalone)
+   In standalone mode there's no Safari toolbar/address bar, so:
+   - The status bar overlaps content (with black-translucent)
+   - safe-area-inset-top accounts for the status bar notch
+   - safe-area-inset-bottom is smaller (no toolbar)
+   - Use 100vh / 100dvh directly since no browser chrome resizing
+   ============================================================================ */
+@media (display-mode: standalone) {
+  /* Ensure we use the full viewport without Safari chrome */
+  html, body {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Prevent pull-to-refresh / overscroll bouncing */
+  body {
+    overscroll-behavior: none;
   }
 }

@@ -132,9 +132,9 @@ NOW: Generate the implementation plan for the task above. Think step by step.`;
       mode: 'claude',
     });
 
-    // Use configured model for plan generation, falling back to opus
+    // Use configured model for plan generation (empty string = CLI default)
     const planModelConfig = await ctx.getModelConfig();
-    const modelToUse = planModelConfig?.agentTypeOverrides?.implement || planModelConfig?.defaultModel || 'opus';
+    const modelToUse = planModelConfig?.agentTypeOverrides?.implement || planModelConfig?.defaultModel || '';
 
     try {
       const { result, cost } = await session.runPrompt(prompt, { model: modelToUse });

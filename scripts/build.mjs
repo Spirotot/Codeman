@@ -67,6 +67,8 @@ run('minify ralph-panel.js', 'npx esbuild dist/web/public/ralph-panel.js --minif
 run('minify settings-ui.js', 'npx esbuild dist/web/public/settings-ui.js --minify --outfile=dist/web/public/settings-ui.js --allow-overwrite');
 run('minify panels-ui.js', 'npx esbuild dist/web/public/panels-ui.js --minify --outfile=dist/web/public/panels-ui.js --allow-overwrite');
 run('minify session-ui.js', 'npx esbuild dist/web/public/session-ui.js --minify --outfile=dist/web/public/session-ui.js --allow-overwrite');
+run('minify conversation-view.js', 'npx esbuild dist/web/public/conversation-view.js --minify --outfile=dist/web/public/conversation-view.js --allow-overwrite');
+run('minify slash-commands.js', 'npx esbuild dist/web/public/slash-commands.js --minify --outfile=dist/web/public/slash-commands.js --allow-overwrite');
 run('minify styles.css', 'npx esbuild dist/web/public/styles.css --minify --outfile=dist/web/public/styles.css --allow-overwrite');
 run('minify mobile.css', 'npx esbuild dist/web/public/mobile.css --minify --outfile=dist/web/public/mobile.css --allow-overwrite');
 
@@ -90,6 +92,8 @@ console.log('\n[build] content-hash cache busting');
     'settings-ui.js',
     'panels-ui.js',
     'session-ui.js',
+    'conversation-view.js',
+    'slash-commands.js',
     'ralph-wizard.js',
     'api-client.js',
     'subagent-windows.js',

@@ -18,7 +18,7 @@
  *
  * @dependency mobile-handlers.js (MobileDetection.isTouchDevice)
  * @dependency app.js (uses global `app` for sendInput, activeSessionId, terminal)
- * @loadorder 5 of 15 — loaded after notification-manager.js, before app.js
+ * @loadorder 5 of 9 — loaded after notification-manager.js, before app.js
  */
 
 // Codeman — Keyboard accessory bar and focus trap for modals

@@ -19,7 +19,7 @@
  *
  * @dependency mobile-handlers.js (MobileDetection for device checks)
  * @dependency app.js (uses global `app` for sendInput, showToast, terminal focus)
- * @loadorder 3 of 15 — loaded after mobile-handlers.js, before notification-manager.js
+ * @loadorder 3 of 9 — loaded after mobile-handlers.js, before notification-manager.js
  */
 
 // Codeman — Voice input with Deepgram Nova-3 and Web Speech API fallback
@@ -553,10 +553,26 @@ const VoiceInput = {
     this.stop();
   },
 
+  /** Insert transcribed text into CV input textarea */
+  _insertIntoCv(text) {
+    const input = document.getElementById('cvInput');
+    if (!input) return false;
+    input.value = (input.value ? input.value + ' ' : '') + text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+    return true;
+  },
+
   _insertText(text) {
     if (!app.activeSessionId || !text.trim()) return;
     const trimmed = text.trim();
     const mode = this._getDeepgramConfig().insertMode || 'direct';
+
+    // Route to CV input when conversation view is open
+    if (typeof ConversationView !== 'undefined' && ConversationView.isOpen()) {
+      this._insertIntoCv(trimmed);
+      return;
+    }
 
     if (mode === 'compose') {
       // If a compose overlay is already open, populate its textarea instead of recreating

@@ -6,8 +6,9 @@
 
 import { FastifyInstance } from 'fastify';
 import { join, dirname } from 'node:path';
-import { existsSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, mkdirSync, writeFileSync, createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import {
   ApiErrorCode,
   createErrorResponse,
@@ -37,6 +38,7 @@ import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
 import { writeHooksConfig, updateCaseEnvVars } from '../../hooks-config.js';
 import { generateClaudeMd } from '../../templates/claude-md.js';
 import { imageWatcher } from '../../image-watcher.js';
+import { subagentWatcher } from '../../subagent-watcher.js';
 import { getLifecycleLog } from '../../session-lifecycle-log.js';
 import type { SessionPort, EventPort, ConfigPort, InfraPort, AuthPort } from '../ports/index.js';
 import { MAX_CONCURRENT_SESSIONS } from '../../config/map-limits.js';
@@ -917,6 +919,244 @@ export function registerSessionRoutes(
       await ctx.cleanupSession(session.id, true, 'quick_start_error');
       return createErrorResponse(ApiErrorCode.OPERATION_FAILED, getErrorMessage(err));
     }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // Conversation — parsed JSONL transcript for conversation view
+  // ═══════════════════════════════════════════════════════════════
+
+  const TOOL_RESULT_TRUNCATE = 2000;
+
+  /** Detect system/internal messages masquerading as user messages */
+  const SYSTEM_USER_PATTERNS = [
+    /^<teammate-message\s/, // teammate notifications
+    /^<task-notification>/, // task/subagent output notifications
+    /^<local-command-caveat>/, // caveat header before local command output
+    /^This session is being continued from a previous conversation/, // compaction summary
+    /^<command-name>\//, // slash command (e.g. /compact)
+    /^<local-command-stdout>/, // slash command output
+    /^<system-reminder>/, // system reminders injected into user turns
+    /^Base directory for this skill:/, // skill invocations (global, plugin, project)
+  ];
+
+  interface ConversationMessage {
+    index: number;
+    type: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'thinking' | 'system';
+    timestamp?: string;
+    content?: string;
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+    toolUseId?: string;
+    isError?: boolean;
+    agentDescription?: string;
+    agentId?: string;
+  }
+
+  /**
+   * Parse a Claude JSONL transcript file and return conversation messages.
+   * Returns newest-first with pagination via `before` cursor (message index).
+   */
+  async function parseConversationJsonl(
+    filePath: string,
+    limit: number,
+    before?: number
+  ): Promise<{ messages: ConversationMessage[]; total: number; hasMore: boolean }> {
+    // Read all lines to get the full picture
+    const allMessages: ConversationMessage[] = [];
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      return { messages: [], total: 0, hasMore: false };
+    }
+
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
+
+    let lineIndex = 0;
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        const extracted = extractConversationMessages(entry, lineIndex);
+        allMessages.push(...extracted);
+        lineIndex++;
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    // Assign sequential indices
+    for (let i = 0; i < allMessages.length; i++) {
+      allMessages[i].index = i;
+    }
+
+    const total = allMessages.length;
+
+    // Newest-first ordering
+    const reversed = [...allMessages].reverse();
+
+    // Apply cursor
+    let filtered = reversed;
+    if (before !== undefined) {
+      filtered = reversed.filter((m) => m.index < before);
+    }
+
+    const page = filtered.slice(0, limit);
+    const hasMore = filtered.length > limit;
+
+    return { messages: page, total, hasMore };
+  }
+
+  /** Extract conversation messages from a single JSONL entry */
+  function extractConversationMessages(entry: Record<string, unknown>, _lineIndex: number): ConversationMessage[] {
+    const results: ConversationMessage[] = [];
+    const type = entry.type as string;
+    const timestamp = (entry.timestamp as string) || undefined;
+
+    if (type === 'user') {
+      const message = entry.message as { content?: unknown; role?: string } | undefined;
+      if (message?.content) {
+        if (typeof message.content === 'string') {
+          const isSystem = SYSTEM_USER_PATTERNS.some((p) => p.test((message.content as string).trimStart()));
+          results.push({ index: 0, type: isSystem ? 'system' : 'user', content: message.content, timestamp });
+        } else if (Array.isArray(message.content)) {
+          const textParts = (message.content as Array<{ type: string; text?: string }>)
+            .filter((b) => b.type === 'text' && b.text)
+            .map((b) => b.text)
+            .join('\n');
+          if (textParts) {
+            const isSystem = SYSTEM_USER_PATTERNS.some((p) => p.test(textParts.trimStart()));
+            results.push({ index: 0, type: isSystem ? 'system' : 'user', content: textParts, timestamp });
+          }
+        }
+      }
+    } else if (type === 'assistant') {
+      const message = entry.message as { content?: unknown } | undefined;
+      if (Array.isArray(message?.content)) {
+        for (const block of message!.content as Array<Record<string, unknown>>) {
+          if (block.type === 'text' && block.text) {
+            results.push({ index: 0, type: 'assistant', content: block.text as string, timestamp });
+          } else if (block.type === 'thinking' && block.thinking) {
+            results.push({ index: 0, type: 'thinking', content: block.thinking as string, timestamp });
+          } else if (block.type === 'tool_use') {
+            const toolMsg: ConversationMessage = {
+              index: 0,
+              type: 'tool_use',
+              toolName: block.name as string,
+              toolUseId: block.id as string,
+              timestamp,
+            };
+            // Include tool input, truncating large values
+            if (block.input) {
+              try {
+                const inputStr = JSON.stringify(block.input);
+                toolMsg.toolInput =
+                  inputStr.length > TOOL_RESULT_TRUNCATE
+                    ? ({ _truncated: inputStr.slice(0, TOOL_RESULT_TRUNCATE) + '…' } as Record<string, unknown>)
+                    : (block.input as Record<string, unknown>);
+              } catch {
+                toolMsg.toolInput = { _error: 'Could not serialize input' };
+              }
+            }
+            // Check for subagent (Agent or Task tool) via agent description
+            if (
+              (block.name === 'Agent' || block.name === 'Task') &&
+              typeof (block.input as Record<string, unknown>)?.description === 'string'
+            ) {
+              toolMsg.agentDescription = (block.input as Record<string, unknown>).description as string;
+            }
+            results.push(toolMsg);
+          }
+        }
+      }
+    } else if (type === 'system') {
+      // System-level JSONL entries (e.g. context window info) — skip, not displayable
+      return results;
+    } else if (type === 'tool_result') {
+      const toolUseId = entry.tool_use_id as string | undefined;
+      const isError = entry.is_error === true;
+      let content = '';
+      if (typeof entry.content === 'string') {
+        content = entry.content;
+      } else if (Array.isArray(entry.content)) {
+        content = (entry.content as Array<{ type: string; text?: string }>)
+          .filter((b) => b.type === 'text' && b.text)
+          .map((b) => b.text)
+          .join('\n');
+      }
+      if (content.length > TOOL_RESULT_TRUNCATE) {
+        content = content.slice(0, TOOL_RESULT_TRUNCATE) + '… [truncated]';
+      }
+      results.push({ index: 0, type: 'tool_result', content, toolUseId, isError, timestamp });
+    }
+
+    return results;
+  }
+
+  app.get('/api/sessions/:id/conversation', async (req) => {
+    const { id } = req.params as { id: string };
+    const query = req.query as Record<string, string>;
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const before = query.before ? parseInt(query.before, 10) : undefined;
+    const subagentId = query.subagent || undefined;
+
+    const session = ctx.sessions.get(id);
+    // Use claudeSessionId for JSONL lookup — resumed sessions write to original ID
+    const effectiveSessionId = session?.claudeSessionId || id;
+
+    // Find the JSONL file across all project directories
+    const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
+    let jsonlPath: string | null = null;
+
+    try {
+      const projectDirs = await fs.readdir(projectsDir);
+      for (const projDir of projectDirs) {
+        const candidate = join(projectsDir, projDir, `${effectiveSessionId}.jsonl`);
+        try {
+          await fs.access(candidate);
+          jsonlPath = candidate;
+          break;
+        } catch {
+          // Try next project dir
+        }
+      }
+    } catch {
+      // Projects dir may not exist
+    }
+
+    // NOTE: Previously there were two cwd-based heuristic fallbacks here:
+    // 1. "No-JSONL fallback" — scanned for unclaimed JSONL files matching workingDir
+    // 2. "Staleness fallback" — looked for newer JSONL when current was stale (>2min)
+    //
+    // Both were removed because cwd matching is unreliable when multiple sessions
+    // share the same workingDir (e.g., ~/PARA). The heuristics would "steal"
+    // another session's JSONL after compaction or /clear created a new session ID
+    // that wasn't yet known to Codeman. The authoritative path for discovering
+    // new session IDs is the PTY output parser (session.ts ~L1639), which updates
+    // claudeSessionId when Claude outputs JSON messages with a new session_id.
+
+    // Also check for subagent JSONL if requested — use SubagentWatcher's known path
+    if (subagentId) {
+      const subagentInfo = subagentWatcher.getSubagent(subagentId);
+      if (subagentInfo?.filePath) {
+        jsonlPath = subagentInfo.filePath;
+      } else {
+        return { messages: [], total: 0, hasMore: false };
+      }
+    }
+
+    // If no JSONL found, the claudeSessionId hasn't been discovered yet.
+    // This happens when /resume was used inside Claude CLI — the real session ID
+    // is only known once Claude outputs a JSON message containing it (caught by
+    // session.ts line ~1635). Until then, conversation history is unavailable.
+    if (!jsonlPath) {
+      return { messages: [], total: 0, hasMore: false };
+    }
+
+    return parseConversationJsonl(jsonlPath, limit, before);
   });
 
   // ═══════════════════════════════════════════════════════════════

@@ -27,6 +27,9 @@ This session is managed by **Codeman** and runs within a tmux session.
 - The session persists across disconnects - your work is safe
 - Token usage, costs, and background tasks are tracked externally
 
+### Tab Title
+Use the `mcp__codeman__set_tab_title` tool to name your tab in the Codeman UI. Call it early in the session with a short, descriptive title reflecting the current task (e.g., "Auth API", "Fix deploy pipeline"). Update it when the focus shifts significantly.
+
 ---
 
 ## Work Principles

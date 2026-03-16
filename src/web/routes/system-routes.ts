@@ -476,6 +476,21 @@ export function registerSystemRoutes(
     }
   });
 
+  // ========== Claude CLI Settings (read-only) ==========
+
+  /** Returns the global Claude CLI agent-teams env var from ~/.claude/settings.json */
+  app.get('/api/claude-settings/agent-teams', async () => {
+    try {
+      const claudeSettingsPath = join(homedir(), '.claude', 'settings.json');
+      const content = await fs.readFile(claudeSettingsPath, 'utf-8');
+      const settings = JSON.parse(content);
+      const enabled = settings?.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
+      return { success: true, enabled };
+    } catch {
+      return { success: true, enabled: false };
+    }
+  });
+
   // ========== Model Configuration ==========
 
   app.get('/api/execution/model-config', async () => {
@@ -634,7 +649,12 @@ export function registerSystemRoutes(
   app.get('/api/sessions/:id/subagents', async (req) => {
     const { id } = req.params as { id: string };
     const session = findSessionOrFail(ctx, id);
-    const subagents = subagentWatcher.getSubagentsForSession(session.workingDir);
+    const allSubagents = subagentWatcher.getSubagentsForSession(session.workingDir);
+    // Filter to subagents belonging to THIS session's Claude session ID.
+    // Without this, sessions sharing the same workingDir (e.g. ~/PARA) see
+    // each other's subagents in the thread navigator.
+    const claudeId = session.claudeSessionId || id;
+    const subagents = allSubagents.filter((a) => a.sessionId === claudeId);
     return { success: true, data: subagents };
   });
 
@@ -709,7 +729,7 @@ export function registerSystemRoutes(
     for await (const chunk of req.raw) {
       totalSize += chunk.length;
       if (totalSize > MAX_SCREENSHOT_SIZE) {
-        reply.code(413);
+        reply.status(413);
         return createErrorResponse(ApiErrorCode.INVALID_INPUT, 'File too large (max 10MB)');
       }
       chunks.push(chunk as Buffer);
@@ -794,12 +814,12 @@ export function registerSystemRoutes(
     const { name } = req.params as { name: string };
     // Prevent path traversal
     if (name.includes('/') || name.includes('\\') || name.includes('..')) {
-      reply.code(400);
+      reply.status(400);
       return createErrorResponse(ApiErrorCode.INVALID_INPUT, 'Invalid filename');
     }
     const filepath = join(SCREENSHOTS_DIR, name);
     if (!existsSync(filepath)) {
-      reply.code(404);
+      reply.status(404);
       return createErrorResponse(ApiErrorCode.NOT_FOUND, 'Screenshot not found');
     }
     const ext = name.match(/\.(png|jpg|jpeg|webp|gif)$/i)?.[1]?.toLowerCase() ?? 'png';
@@ -812,5 +832,172 @@ export function registerSystemRoutes(
     };
     reply.type(mimeMap[ext] ?? 'image/png');
     return fs.readFile(filepath);
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  // Slash commands — discover custom skill commands for autocomplete
+  // ═══════════════════════════════════════════════════════════════
+
+  app.get('/api/slash-commands', async (req) => {
+    const query = req.query as Record<string, string>;
+    const sessionId = query.session;
+    const claudeDir = join(homedir(), '.claude');
+
+    type CmdEntry = { name: string; description: string; type: 'skill' | 'user' | 'project' };
+
+    /** Extract description from SKILL.md frontmatter (handles YAML block scalars `|` and `>`) */
+    function parseSkillDescription(content: string): string {
+      // Block scalar (| or >): read indented lines that follow — check first
+      const blockMatch = content.match(/^description:\s*[|>]-?\s*\n((?:[ \t]+.+\n?)+)/m);
+      if (blockMatch) {
+        return blockMatch[1]
+          .split('\n')
+          .map((l: string) => l.trim())
+          .filter(Boolean)
+          .join(' ');
+      }
+      // Single-line: description: "text" or description: text
+      const singleLine = content.match(/^description:\s*["']?(.+?)["']?\s*$/m);
+      if (singleLine) return singleLine[1].trim().replace(/["']$/, '');
+      return '';
+    }
+
+    // 1. Global skills — ~/.claude/skills/*/SKILL.md → /skill-name
+    const skills: CmdEntry[] = [];
+    try {
+      const dirs = await fs.readdir(join(claudeDir, 'skills'));
+      for (const dir of dirs) {
+        try {
+          const skillMd = await fs.readFile(join(claudeDir, 'skills', dir, 'SKILL.md'), 'utf-8');
+          const desc = parseSkillDescription(skillMd);
+          skills.push({
+            name: dir,
+            description: desc.length > 80 ? desc.slice(0, 77) + '...' : desc,
+            type: 'skill',
+          });
+        } catch {
+          // No SKILL.md or unreadable — skip
+        }
+      }
+    } catch {
+      // Skills dir doesn't exist
+    }
+
+    // 2. Plugin-installed skills — ~/.claude/plugins/cache/<repo>/<plugin>/<ver>/skills/*/SKILL.md → /plugin:skill
+    try {
+      const pluginsJson = await fs.readFile(join(claudeDir, 'plugins', 'installed_plugins.json'), 'utf-8');
+      const pluginsData = JSON.parse(pluginsJson);
+      const plugins = pluginsData?.plugins;
+      if (plugins && typeof plugins === 'object') {
+        for (const [pluginKey, installs] of Object.entries(plugins)) {
+          // pluginKey format: "plugin@repo", installs is an array
+          const pluginName = pluginKey.split('@')[0];
+          const installArr = installs as Array<{ installPath: string }>;
+          const install = installArr?.[0];
+          if (!install?.installPath) continue;
+          try {
+            const skillDirs = await fs.readdir(join(install.installPath, 'skills'));
+            for (const skillDir of skillDirs) {
+              const qualifiedName = `${pluginName}:${skillDir}`;
+              // Skip if already loaded as a global skill (same name)
+              if (skills.some((s) => s.name === qualifiedName || s.name === skillDir)) continue;
+              try {
+                const skillMd = await fs.readFile(join(install.installPath, 'skills', skillDir, 'SKILL.md'), 'utf-8');
+                const desc = parseSkillDescription(skillMd);
+                skills.push({
+                  name: qualifiedName,
+                  description: desc.length > 80 ? desc.slice(0, 77) + '...' : desc,
+                  type: 'skill',
+                });
+              } catch {
+                // No SKILL.md — skip
+              }
+            }
+          } catch {
+            // No skills dir in this plugin
+          }
+        }
+      }
+    } catch {
+      // No installed_plugins.json or unreadable
+    }
+
+    // 3. User commands — ~/.claude/commands/*.md → /command-name
+    const userCommands: CmdEntry[] = [];
+    try {
+      const files = await fs.readdir(join(claudeDir, 'commands'));
+      for (const file of files) {
+        if (!file.endsWith('.md')) continue;
+        const name = file.replace(/\.md$/, '');
+        // Read first line for a description hint
+        let desc = '';
+        try {
+          const content = await fs.readFile(join(claudeDir, 'commands', file), 'utf-8');
+          const firstLine = content
+            .split('\n')
+            .find((l: string) => l.trim() && !l.startsWith('#') && !l.startsWith('---'));
+          desc = firstLine?.trim().slice(0, 80) || '';
+        } catch {
+          /* skip */
+        }
+        userCommands.push({ name, description: desc, type: 'user' });
+      }
+    } catch {
+      // Commands dir doesn't exist
+    }
+
+    // 4. Project commands — <workingDir>/.claude/commands/*.md → /project:command-name
+    const projectCommands: CmdEntry[] = [];
+    if (sessionId) {
+      const session = ctx.sessions.get(sessionId);
+      if (session?.workingDir) {
+        try {
+          const projCmdDir = join(session.workingDir, '.claude', 'commands');
+          const files = await fs.readdir(projCmdDir);
+          for (const file of files) {
+            if (!file.endsWith('.md')) continue;
+            const name = 'project:' + file.replace(/\.md$/, '');
+            let desc = '';
+            try {
+              const content = await fs.readFile(join(projCmdDir, file), 'utf-8');
+              const firstLine = content
+                .split('\n')
+                .find((l: string) => l.trim() && !l.startsWith('#') && !l.startsWith('---'));
+              desc = firstLine?.trim().slice(0, 80) || '';
+            } catch {
+              /* skip */
+            }
+            projectCommands.push({ name, description: desc, type: 'project' });
+          }
+        } catch {
+          // No project commands
+        }
+
+        // 5. Project skills — <workingDir>/.claude/skills/*/SKILL.md
+        try {
+          const projSkillsDir = join(session.workingDir, '.claude', 'skills');
+          const projSkillDirs = await fs.readdir(projSkillsDir);
+          for (const dir of projSkillDirs) {
+            // Skip if already loaded as a global skill (same name)
+            if (skills.some((s) => s.name === dir)) continue;
+            try {
+              const skillMd = await fs.readFile(join(projSkillsDir, dir, 'SKILL.md'), 'utf-8');
+              const desc = parseSkillDescription(skillMd);
+              skills.push({
+                name: dir,
+                description: desc.length > 80 ? desc.slice(0, 77) + '...' : desc,
+                type: 'skill',
+              });
+            } catch {
+              // No SKILL.md — skip
+            }
+          }
+        } catch {
+          // No project skills dir
+        }
+      }
+    }
+
+    return { skills, userCommands, projectCommands };
   });
 }

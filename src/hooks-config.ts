@@ -25,7 +25,8 @@
 
 import { existsSync } from 'node:fs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { HookEventType } from './types.js';
 import { HOOK_TIMEOUT_MS } from './config/auth-config.js';
@@ -85,6 +86,23 @@ export function generateHooksConfig(): { hooks: Record<string, unknown[]> } {
 }
 
 /**
+ * Returns the mcpServers config for settings.local.json.
+ * Points Claude Code at the Codeman MCP server script (set_tab_title, etc.).
+ */
+export function generateMcpConfig(): { mcpServers: Record<string, unknown> } {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const mcpServerPath = join(thisDir, 'mcp', 'codeman-mcp-server.mjs');
+  return {
+    mcpServers: {
+      codeman: {
+        command: 'node',
+        args: [mcpServerPath],
+      },
+    },
+  };
+}
+
+/**
  * Updates env vars in .claude/settings.local.json for the given case path.
  * Merges with existing env field; removes vars set to empty string.
  */
@@ -137,7 +155,8 @@ export async function writeHooksConfig(casePath: string): Promise<void> {
   }
 
   const hooksConfig = generateHooksConfig();
-  const merged = { ...existing, ...hooksConfig };
+  const mcpConfig = generateMcpConfig();
+  const merged = { ...existing, ...hooksConfig, ...mcpConfig };
 
   await writeFile(settingsPath, JSON.stringify(merged, null, 2) + '\n');
 }
