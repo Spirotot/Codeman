@@ -2055,6 +2055,7 @@ class CodemanApp {
     this._updateActiveTabImmediate(sessionId);
     this.renderSessionTabs();
     this._updateLocalEchoState();
+    this._updateConversationToggleBtn();
 
     // Restore flushed offset AND text IMMEDIATELY so backspace/typing work during
     // the async buffer load.  Without this, the offset is 0 during the
