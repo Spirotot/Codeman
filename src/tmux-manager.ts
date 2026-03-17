@@ -519,6 +519,12 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
           .catch(() => {
             /* Already set globally as fallback */
           }),
+        // Resize window to match the active client immediately when it resizes
+        execAsync(`tmux set-option -t "${muxName}" aggressive-resize on`, { timeout: EXEC_TIMEOUT_MS })
+          .then(() => {})
+          .catch(() => {
+            /* Non-critical — window-size latest handles most cases */
+          }),
       ];
 
       // Enable 24-bit true color passthrough — server-wide, set once per lifetime
