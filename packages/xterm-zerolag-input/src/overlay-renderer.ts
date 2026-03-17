@@ -79,6 +79,39 @@ export function renderOverlay(container: HTMLDivElement, params: RenderParams): 
   container.innerHTML = '';
   const fullWidthPx = totalCols * cellW;
 
+  // Full-area opaque background to cover canvas text beneath the overlay.
+  // Uses clip-path for an L-shape: first line starts at startCol, rest at 0.
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:absolute;pointer-events:none';
+  bg.style.backgroundColor = font.backgroundColor;
+  const startPx = startCol * cellW;
+  // Count extra rows of echo content below the overlay text by scanning the
+  // buffer until we hit a separator (───), empty row, or non-text content.
+  // This covers all canvas echo rows without hiding the separator/status bar.
+  let extraCoverRows = 0;
+  if (terminal && totalCols > 0) {
+    const buf = terminal.buffer.active;
+    for (let r = 0; r < 4; r++) {
+      const absRow = buf.viewportY + promptRow + lines.length + r;
+      const line = buf.getLine(absRow);
+      if (!line) break;
+      const text = line.translateToString(true).trimEnd();
+      if (!text || /^[─━═─\u2500-\u257f]+$/.test(text)) break;
+      extraCoverRows++;
+    }
+  }
+  const totalH = (lines.length + extraCoverRows) * cellH;
+  const bleed = 4;
+  bg.style.left = -bleed + 'px';
+  bg.style.top = -bleed + 'px';
+  bg.style.width = fullWidthPx + bleed * 2 + 'px';
+  bg.style.height = totalH + bleed * 2 + 'px';
+  // Clip the top-left corner (prompt area before overlay text)
+  const clipLeft = Math.max(0, startPx - bleed);
+  const clipBottom = cellH + bleed;
+  bg.style.clipPath = `polygon(${clipLeft}px 0, 100% 0, 100% 100%, 0 100%, 0 ${clipBottom}px, ${clipLeft}px ${clipBottom}px)`;
+  container.appendChild(bg);
+
   for (let i = 0; i < lines.length; i++) {
     const leftPx = i === 0 ? startCol * cellW : 0;
     const widthPx = i === 0 ? fullWidthPx - leftPx : fullWidthPx;
@@ -141,6 +174,14 @@ export function renderOverlay(container: HTMLDivElement, params: RenderParams): 
  * Each character gets its own `<span>` positioned by visual column offset.
  * CJK wide characters occupy 2 cell widths.
  */
+// Padding (px) added around each line div to cover sub-pixel compositing
+// seams between the DOM overlay and the canvas layer below. Without this,
+// canvas-rendered text can "peek through" at line-wrap boundaries due to
+// fractional cellW/cellH values and browser anti-aliasing.
+// 3px covers worst-case glyph overshoot on mobile (10px font, fractional cellW).
+const LINE_PAD_X = 3;
+const LINE_PAD_Y = 3;
+
 function makeLine(
   text: string,
   leftPx: number,
@@ -155,15 +196,11 @@ function makeLine(
 ): HTMLDivElement {
   const el = document.createElement('div');
   el.style.cssText = 'position:absolute;pointer-events:none';
-  el.style.backgroundColor = font.backgroundColor;
+  // No per-line background — the container-level bg div handles coverage.
   el.style.left = leftPx + 'px';
   el.style.top = topPx + 'px';
   el.style.width = widthPx + 'px';
-  // Extend background 1px past cell boundary to cover the compositing
-  // seam between the overlay layer (z-index:7) and the canvas layer below.
-  // The extra 1px lands in the next row's charTop gap (empty area before
-  // text rendering starts), so no canvas content is obscured.
-  el.style.height = cellH + 1 + 'px';
+  el.style.height = cellH + 'px';
 
   // CJK wide chars occupy 2 cells — position by visual column offset
   let colOffset = 0;
