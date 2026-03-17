@@ -52,7 +52,7 @@ When user says "COM":
 4. **Sync CLAUDE.md version**: Update the `**Version**` line below to match the new version from `package.json`
 5. **Commit and deploy**: `git add -A && git commit -m "chore: version packages" && git push && npm run build && systemctl --user restart codeman-web`
 
-**Version**: 0.3.11 (must match `package.json`)
+**Version**: 0.4.3 (must match `package.json`)
 
 ## Project Overview
 
@@ -108,9 +108,9 @@ Codeman is a Claude Code session manager with web interface and autonomous Ralph
 | **State** | `src/state-store.ts`, `src/run-summary.ts`, `src/session-lifecycle-log.ts` | |
 | **Infra** | `src/hooks-config.ts`, `src/push-store.ts`, `src/tunnel-manager.ts`, `src/image-watcher.ts`, `src/file-stream-manager.ts` | |
 | **Plan** | `src/plan-orchestrator.ts`, `src/prompts/*.ts`, `src/templates/claude-md.ts` | |
-| **Web** | `src/web/server.ts`, `src/web/sse-events.ts`, `src/web/routes/*.ts` (12 route modules + barrel), `src/web/ports/*.ts`, `src/web/middleware/auth.ts`, `src/web/schemas.ts` | |
-| **Frontend** | `src/web/public/app.js` ★ (~12.1K lines) + 9 JS modules (incl. `sw.js` service worker) | |
-| **Types** | `src/types/index.ts` → 14 domain files | See `@fileoverview` in index.ts |
+| **Web** | `src/web/server.ts`, `src/web/sse-events.ts`, `src/web/routes/*.ts` (13 route modules incl. `ws-routes.ts` + barrel), `src/web/ports/*.ts`, `src/web/middleware/auth.ts`, `src/web/schemas.ts` | |
+| **Frontend** | `src/web/public/app.js` (~2.6K lines, core) + 5 infra modules (`constants.js`, `mobile-handlers.js`, `voice-input.js`, `notification-manager.js`, `keyboard-accessory.js`) + 6 domain modules (`terminal-ui.js`, `respawn-ui.js`, `ralph-panel.js`, `settings-ui.js`, `panels-ui.js`, `session-ui.js`) + 4 feature modules (`ralph-wizard.js`, `api-client.js`, `subagent-windows.js`, `input-cjk.js`) + `sw.js` | |
+| **Types** | `src/types/index.ts` → 13 domain files | See `@fileoverview` in index.ts |
 
 ★ = Large file (>50KB). All files have `@fileoverview` JSDoc — read that before diving in.
 
@@ -118,7 +118,7 @@ Codeman is a Claude Code session manager with web interface and autonomous Ralph
 
 **Config**: `src/config/` — 9 files. Import from specific files, not barrel.
 
-**Utilities**: `src/utils/` — re-exported via index. Key: `CleanupManager`, `LRUMap`, `StaleExpirationMap`, `BufferAccumulator`, `stripAnsi`, `Debouncer`.
+**Utilities**: `src/utils/` — re-exported via index. Key: `CleanupManager`, `LRUMap`, `StaleExpirationMap`, `BufferAccumulator`, `stripAnsi`, `Debouncer`, `KeyedDebouncer`. Also: `claude-cli-resolver`/`opencode-cli-resolver` (CLI path resolution), `string-similarity` (fuzzy matching), `regex-patterns` (ANSI/token/spinner patterns), `assertNever` (exhaustive checks).
 
 ### Data Flow
 
@@ -143,7 +143,7 @@ Codeman is a Claude Code session manager with web interface and autonomous Ralph
 
 ### Frontend
 
-Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. Load order: `constants.js`(1) → `mobile-handlers.js`(2) → `voice-input.js`(3) → `notification-manager.js`(4) → `keyboard-accessory.js`(5) → `app.js`(6) → `ralph-wizard.js`(7) → `api-client.js`(8) → `subagent-windows.js`(9).
+Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. Load order: `constants.js`(1) → `mobile-handlers.js`(2) → `voice-input.js`(3) → `notification-manager.js`(4) → `keyboard-accessory.js`(5) → `input-cjk.js`(5.5) → `app.js`(6) → `terminal-ui.js`(7) → `respawn-ui.js`(8) → `ralph-panel.js`(9) → `settings-ui.js`(10) → `panels-ui.js`(11) → `session-ui.js`(12) → `ralph-wizard.js`(13) → `api-client.js`(14) → `subagent-windows.js`(15). `input-cjk.js` handles CJK IME composition via an always-visible textarea below the terminal (`window.cjkActive` blocks xterm's onData).
 
 **Z-index layers**: subagent windows (1000), plan agents (1100), log viewers (2000), image popups (3000), local echo overlay (7).
 
@@ -166,11 +166,11 @@ Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. L
 
 ### SSE Event Registry
 
-~100 event types in `src/web/sse-events.ts` (backend) and `SSE_EVENTS` in `constants.js` (frontend). Both must be kept in sync.
+~106 event types in `src/web/sse-events.ts` (backend) and `SSE_EVENTS` in `constants.js` (frontend). Both must be kept in sync.
 
 ### API Routes
 
-~111 handlers across 12 route files in `src/web/routes/`: system (35), sessions (24), ralph (9), plan (8), respawn (7), cases (7), files (5), mux (5), scheduled (4), push (4), teams (2), hooks (1). Each file has `@fileoverview` with endpoint details.
+~114 handlers across 13 route files in `src/web/routes/`: system (36), sessions (25), ralph (9), plan (8), respawn (7), cases (7), files (5), mux (5), scheduled (4), push (4), teams (2), hooks (1), ws (1 WebSocket). Each file has `@fileoverview` with endpoint details.
 
 ## Adding Features
 

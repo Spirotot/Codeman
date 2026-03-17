@@ -17,11 +17,16 @@
   <!-- xterm.css loaded async — terminal won't display until xterm.js runs anyway -->
   <link rel="preload" href="vendor/xterm.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
   <noscript><link rel="stylesheet" href="vendor/xterm.css"></noscript>
+  <!-- Preload critical resources — lets browser discover these during HTML parse
+       instead of waiting until <script> tags at bottom-of-body are reached. -->
+  <link rel="preload" href="vendor/xterm.min.js" as="script">
+  <link rel="preload" href="constants.js" as="script">
+  <link rel="preload" href="app.js" as="script">
   <!-- Self-hosted xterm.js — eliminates CDN DNS/TLS latency (~100ms).
        'defer' preserves execution order (xterm loads before fit addon). -->
   <script defer src="vendor/xterm.min.js"></script>
   <script defer src="vendor/xterm-addon-fit.min.js"></script>
-  <script defer src="vendor/xterm-addon-webgl.min.js"></script>
+  <!-- WebGL addon lazy-loaded by app.js on desktop only (skipped on mobile, saving 244KB) -->
   <script defer src="vendor/xterm-addon-unicode11.min.js"></script>
   <script defer src="vendor/xterm-zerolag-input.js"></script>
   <script defer src="vendor/marked.min.js"></script>
@@ -236,7 +241,12 @@
 
     <!-- Main Terminal Area -->
     <main class="main">
-      <div class="terminal-container" id="terminalContainer"></div>
+      <div class="terminal-wrap">
+        <div class="terminal-container" id="terminalContainer"></div>
+        <textarea id="cjkInput" rows="1" placeholder="CJK input (Enter = send, Esc = clear)"
+          maxlength="65536" aria-label="CJK IME input field"
+          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+      </div>
 
       <!-- Welcome Overlay (shown when no session active) -->
       <div class="welcome-overlay" id="welcomeOverlay">
@@ -407,6 +417,9 @@
       </div>
 
       <div class="toolbar-right">
+        <button class="btn-toolbar" id="cvToggleBtn" onclick="app.toggleConversationView()" title="Conversation view" style="display:none">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </button>
         <span class="version-display" id="versionDisplay" title="Codeman version">v0.0.0</span>
       </div>
     </footer>
@@ -1684,8 +1697,15 @@
   <script defer src="voice-input.js"></script>
   <script defer src="notification-manager.js"></script>
   <script defer src="keyboard-accessory.js"></script>
+  <script defer src="input-cjk.js"></script>
   <script defer src="slash-commands.js"></script>
   <script defer src="app.js"></script>
+  <script defer src="terminal-ui.js"></script>
+  <script defer src="respawn-ui.js"></script>
+  <script defer src="ralph-panel.js"></script>
+  <script defer src="settings-ui.js"></script>
+  <script defer src="panels-ui.js"></script>
+  <script defer src="session-ui.js"></script>
   <script defer src="conversation-view.js"></script>
   <script defer src="ralph-wizard.js"></script>
   <script defer src="api-client.js"></script>

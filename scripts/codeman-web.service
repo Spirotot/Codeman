@@ -11,6 +11,7 @@ RestartSec=5
 KillMode=process
 Environment=NODE_ENV=production
 Environment=HOME=/home/arkon
+Environment=NODE_COMPILE_CACHE=/home/arkon/.codeman/compile-cache
 
 # Logging
 StandardOutput=journal

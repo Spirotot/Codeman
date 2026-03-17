@@ -8,7 +8,7 @@
  */
 
 // eslint-disable-next-line no-unused-vars
-const ConversationView = (() => {
+var ConversationView = (() => {
   /** @type {HTMLElement|null} */
   let panel = null;
   /** @type {string|null} */

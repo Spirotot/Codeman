@@ -38,12 +38,25 @@ const WS_BATCH_INTERVAL_MS = 8;
 /** Flush immediately when batch exceeds this size (bytes) for responsiveness. */
 const WS_BATCH_FLUSH_THRESHOLD = 16384;
 
+/** How often to ping each WebSocket client (ms). Detects stale connections that
+ *  TCP keepalive won't catch for minutes, especially through tunnels/proxies. */
+const WS_PING_INTERVAL_MS = 30_000;
+
+/** If pong isn't received within this window after a ping, terminate the socket. */
+const WS_PONG_TIMEOUT_MS = 10_000;
+
 /** DEC 2026 synchronized update markers. Wrapping output in these tells xterm.js
  *  to buffer all content and render atomically in a single frame — eliminates
  *  flicker from cursor-up redraws that Ink sends without its own sync markers
  *  (DA capability negotiation fails through the PTY→server→WS proxy chain). */
 const DEC_2026_START = '\x1b[?2026h';
 const DEC_2026_END = '\x1b[?2026l';
+
+/** Max concurrent WS connections per session. Prevents listener/bandwidth multiplication. */
+const MAX_WS_PER_SESSION = 5;
+
+/** Track active WS connections per session for connection limiting. */
+const sessionWsCount = new Map<string, number>();
 
 export function registerWsRoutes(app: FastifyInstance, ctx: SessionPort): void {
   app.get<{ Params: { id: string } }>('/ws/sessions/:id/terminal', { websocket: true }, (socket: WebSocket, req) => {
@@ -54,6 +67,17 @@ export function registerWsRoutes(app: FastifyInstance, ctx: SessionPort): void {
       socket.close(4004, 'Session not found');
       return;
     }
+
+    // Enforce per-session connection limit
+    const currentCount = sessionWsCount.get(id) ?? 0;
+    if (currentCount >= MAX_WS_PER_SESSION) {
+      socket.close(4008, 'Too many connections');
+      return;
+    }
+    sessionWsCount.set(id, currentCount + 1);
+
+    // Swallow socket errors — cleanup happens in 'close'
+    socket.on('error', () => {});
 
     // Per-connection micro-batch state
     let batchChunks: string[] = [];
@@ -81,7 +105,15 @@ export function registerWsRoutes(app: FastifyInstance, ctx: SessionPort): void {
         if (msg.t === 'i' && typeof msg.d === 'string') {
           if (msg.d.length > MAX_INPUT_LENGTH) return;
           session.write(msg.d);
-        } else if (msg.t === 'z' && typeof msg.c === 'number' && typeof msg.r === 'number') {
+        } else if (
+          msg.t === 'z' &&
+          Number.isInteger(msg.c) &&
+          Number.isInteger(msg.r) &&
+          msg.c >= 1 &&
+          msg.c <= 500 &&
+          msg.r >= 1 &&
+          msg.r <= 200
+        ) {
           session.resize(msg.c, msg.r);
         }
       } catch {
@@ -91,6 +123,7 @@ export function registerWsRoutes(app: FastifyInstance, ctx: SessionPort): void {
 
     // Terminal output -> micro-batched WS send
     const onTerminal = (data: string) => {
+      if (socket.readyState !== 1) return;
       batchChunks.push(data);
       batchSize += data.length;
 
@@ -121,16 +154,53 @@ export function registerWsRoutes(app: FastifyInstance, ctx: SessionPort): void {
       }
     };
 
+    // Close WS when session exits (deleted, respawned, or crashed) — prevents
+    // orphaned listeners and stale writes to a dead PTY.
+    const onSessionExit = () => {
+      socket.close(4009, 'Session terminated');
+    };
+
     session.on('terminal', onTerminal);
     session.on('clearTerminal', onClearTerminal);
     session.on('needsRefresh', onNeedsRefresh);
+    session.on('exit', onSessionExit);
+
+    // Heartbeat: detect stale connections (especially through tunnels where
+    // TCP RST can take minutes to propagate).
+    let pongTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    socket.on('pong', () => {
+      if (pongTimeout) {
+        clearTimeout(pongTimeout);
+        pongTimeout = null;
+      }
+    });
+
+    const pingInterval = setInterval(() => {
+      if (socket.readyState !== 1) return;
+      socket.ping();
+      pongTimeout = setTimeout(() => {
+        socket.terminate();
+      }, WS_PONG_TIMEOUT_MS);
+    }, WS_PING_INTERVAL_MS);
 
     socket.on('close', () => {
+      clearInterval(pingInterval);
+      if (pongTimeout) clearTimeout(pongTimeout);
       if (batchTimer) clearTimeout(batchTimer);
       batchChunks = [];
       session.off('terminal', onTerminal);
       session.off('clearTerminal', onClearTerminal);
       session.off('needsRefresh', onNeedsRefresh);
+      session.off('exit', onSessionExit);
+
+      // Decrement per-session connection count
+      const count = sessionWsCount.get(id) ?? 1;
+      if (count <= 1) {
+        sessionWsCount.delete(id);
+      } else {
+        sessionWsCount.set(id, count - 1);
+      }
     });
   });
 }

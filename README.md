@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-1e3a5f?style=flat-square" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18%2B-22c55e?style=flat-square&logo=node.js&logoColor=white" alt="Node.js 18+"></a>
-  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-3b82f6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.5"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.9-3b82f6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.9"></a>
   <a href="https://fastify.dev/"><img src="https://img.shields.io/badge/Fastify-5.x-1e3a5f?style=flat-square&logo=fastify&logoColor=white" alt="Fastify"></a>
   <img src="https://img.shields.io/badge/Tests-1435%20total-22c55e?style=flat-square" alt="Tests">
 </p>
@@ -28,7 +28,27 @@
 curl -fsSL https://raw.githubusercontent.com/Ark0N/Codeman/master/install.sh | bash
 ```
 
-This installs Node.js and tmux if missing, clones Codeman to `~/.codeman/app`, and builds it. You'll need at least one AI coding CLI installed — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [OpenCode](https://opencode.ai) (or both). After install:
+This installs Node.js and tmux if missing, clones Codeman to `~/.codeman/app`, and builds it.
+
+**Install from a fork or specific branch:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/<user>/Codeman/<branch>/install.sh | \
+  CODEMAN_REPO_URL=https://github.com/<user>/Codeman.git \
+  CODEMAN_BRANCH=<branch> bash
+```
+
+The installer supports these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODEMAN_REPO_URL` | upstream Codeman | Custom git repository URL |
+| `CODEMAN_BRANCH` | `master` | Git branch to install |
+| `CODEMAN_INSTALL_DIR` | `~/.codeman/app` | Custom install directory |
+| `CODEMAN_SKIP_SYSTEMD` | `0` | Skip systemd service setup prompt |
+| `CODEMAN_NODE_VERSION` | `22` | Node.js major version to install |
+| `CODEMAN_NONINTERACTIVE` | `0` | Skip all prompts (for CI/automation) |
+
+You'll need at least one AI coding CLI installed — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [OpenCode](https://opencode.ai) (or both). After install:
 
 ```bash
 codeman web
@@ -479,9 +499,9 @@ The codebase went through a comprehensive 7-phase refactoring that eliminated go
 | Phase | What changed | Impact |
 |-------|-------------|--------|
 | **Performance** | Cached endpoints, SSE adaptive batching, buffer chunking | Sub-16ms terminal latency |
-| **Route extraction** | `server.ts` split into 12 domain route modules + auth middleware + port interfaces | **−60%** server.ts LOC (6,736 → 2,697) |
+| **Route extraction** | `server.ts` split into 13 domain route modules + auth middleware + port interfaces | **−60%** server.ts LOC (6,736 → 2,697) |
 | **Domain splitting** | `types.ts` → 14 domain files, `ralph-tracker` → 7 files, `respawn-controller` → 5 files, `session` → 6 files | No more god files |
-| **Frontend modules** | `app.js` → 8 extracted modules (constants, mobile, voice, notifications, keyboard, API, subagent windows) | **−24%** app.js LOC (15.2K → 11.5K) |
+| **Frontend modules** | `app.js` → 9 extracted modules (constants, mobile, voice, notifications, keyboard, CJK input, API, Ralph wizard, subagent windows) | **−24%** app.js LOC (15.2K → 11.5K) |
 | **Config consolidation** | ~70 scattered magic numbers → 9 domain-focused config files | Zero cross-file duplicates |
 | **Test infrastructure** | Shared mock library, 12 route test files, consolidated MockSession | Testable route handlers via `app.inject()` |
 
