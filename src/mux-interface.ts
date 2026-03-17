@@ -14,6 +14,7 @@ import type {
   ClaudeMode,
   SessionMode,
   OpenCodeConfig,
+  PaneInfo,
 } from './types.js';
 
 /**
@@ -193,4 +194,13 @@ export interface TerminalMultiplexer extends EventEmitter {
 
   /** Respawn a dead pane with a fresh command. Returns the new PID or null on failure. */
   respawnPane(options: RespawnPaneOptions): Promise<number | null>;
+
+  /** List panes in a mux session with their dimensions. */
+  listPanes(muxName: string): PaneInfo[];
+
+  /** Capture the buffer of a specific pane with ANSI colors preserved. */
+  capturePaneBuffer(muxName: string, paneTarget: string): string | null;
+
+  /** Resize a pane to the given dimensions. */
+  resizePane(muxName: string, paneTarget: string, width: number, height: number): boolean;
 }

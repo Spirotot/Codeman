@@ -2190,6 +2190,44 @@ export class Session extends EventEmitter {
     return this._terminalBuffer.value;
   }
 
+  /**
+   * Capture the tmux scrollback for this session's pane.
+   * Returns rendered content with ANSI colors (no Ink cursor-home/erase
+   * sequences), which produces proper scrollback when replayed in xterm.js.
+   *
+   * If `desiredCols` is provided and differs from the current pane width,
+   * the pane is resized before capture so line breaks match the client's
+   * terminal width. Ink will redraw at the new size on the next update.
+   *
+   * Returns null if the session doesn't use tmux or capture fails.
+   */
+  captureTmuxScrollback(desiredCols?: number): { content: string; cols: number; rows: number } | null {
+    if (!this._mux || !this._muxSession) return null;
+    try {
+      const panes = this._mux.listPanes(this._muxSession.muxName);
+      if (panes.length === 0) return null;
+      const pane = panes[0];
+
+      // Resize pane to match client width if needed
+      if (desiredCols && desiredCols > 0 && desiredCols !== pane.width) {
+        this._mux.resizePane(this._muxSession.muxName, pane.paneId, desiredCols, pane.height);
+        // Re-read dimensions after resize
+        const updatedPanes = this._mux.listPanes(this._muxSession.muxName);
+        if (updatedPanes.length > 0) {
+          const content = this._mux.capturePaneBuffer(this._muxSession.muxName, updatedPanes[0].paneId);
+          if (!content) return null;
+          return { content, cols: updatedPanes[0].width, rows: updatedPanes[0].height };
+        }
+      }
+
+      const content = this._mux.capturePaneBuffer(this._muxSession.muxName, pane.paneId);
+      if (!content) return null;
+      return { content, cols: pane.width, rows: pane.height };
+    } catch {
+      return null;
+    }
+  }
+
   clearBuffers(): void {
     this._terminalBuffer.clear();
     this._textOutput.clear();

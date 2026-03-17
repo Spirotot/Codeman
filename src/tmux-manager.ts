@@ -1531,6 +1531,27 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
   }
 
   /**
+   * Resize a pane to the given dimensions.
+   * Used before tmux capture to match the client's terminal width.
+   */
+  resizePane(muxName: string, paneTarget: string, width: number, height: number): boolean {
+    if (IS_TEST_MODE) return true;
+    if (!isValidMuxName(muxName)) return false;
+    if (!SAFE_PANE_TARGET_PATTERN.test(paneTarget)) return false;
+
+    const target = paneTarget.startsWith('%') ? `${muxName}.${paneTarget}` : `${muxName}.%${paneTarget}`;
+    try {
+      execSync(`tmux resize-pane -t ${shellescape(target)} -x ${width} -y ${height}`, {
+        encoding: 'utf-8',
+        timeout: EXEC_TIMEOUT_MS,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Start piping pane output to a file using tmux pipe-pane.
    * Only pipes output direction (-O) to avoid echoing input.
    */

@@ -522,13 +522,45 @@ export function registerSessionRoutes(
 
   // Query params:
   //   tail=<bytes> - Only return last N bytes (faster initial load)
+  //   source=tmux  - Capture from tmux scrollback instead of raw PTY buffer.
+  //                  Produces rendered content with proper scrollback history
+  //                  (Ink's cursor-home/erase sequences are gone). The captured
+  //                  content is at the tmux pane's column width; the client should
+  //                  replay at that width, then resize to fit.
   app.get('/api/sessions/:id/terminal', async (req) => {
     const { id } = req.params as { id: string };
-    const query = req.query as { tail?: string };
+    const query = req.query as { tail?: string; source?: string; cols?: string };
     const session = ctx.sessions.get(id);
 
     if (!session) {
       return createErrorResponse(ApiErrorCode.NOT_FOUND, 'Session not found');
+    }
+
+    // Tmux scrollback source: capture rendered content from tmux pane.
+    // This gives proper scrollback (Ink redraws don't destroy history in tmux).
+    // Pass cols= so the pane is resized to match the client's terminal width
+    // before capture — ensures line breaks are correct without client-side reflow.
+    if (query.source === 'tmux') {
+      const desiredCols = query.cols ? parseInt(query.cols, 10) : undefined;
+      const tmuxCapture = session.captureTmuxScrollback(desiredCols);
+      if (tmuxCapture) {
+        // Clean leading/trailing junk, convert \n to \r\n for xterm.js
+        const cleanTmux = tmuxCapture.content
+          .replace(LEADING_WHITESPACE_PATTERN, '')
+          .replace(/[\s\r\n]+$/, '')
+          .split('\n')
+          .join('\r\n');
+        return {
+          terminalBuffer: cleanTmux,
+          status: session.status,
+          source: 'tmux' as const,
+          paneCols: tmuxCapture.cols,
+          paneRows: tmuxCapture.rows,
+          fullSize: cleanTmux.length,
+          truncated: false,
+        };
+      }
+      // Fall through to PTY buffer if tmux capture fails
     }
 
     const tailBytes = query.tail ? parseInt(query.tail, 10) : 0;
@@ -569,6 +601,7 @@ export function registerSessionRoutes(
     return {
       terminalBuffer: cleanBuffer,
       status: session.status,
+      source: 'pty' as const,
       fullSize,
       truncated,
     };
