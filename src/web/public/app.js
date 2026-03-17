@@ -2204,6 +2204,11 @@ class CodemanApp {
       // fitAddon would compute 0×0 dimensions and destroy content.
       const cvOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();
       if (!cvOpen) {
+        // Refit terminal to current container dimensions before sending resize.
+        // Container may have changed size since last fit (orientation change, etc.).
+        if (this.fitAddon) {
+          try { this.fitAddon.fit(); } catch { /* ignore */ }
+        }
         // Fire-and-forget resize — don't await to avoid blocking UI.
         // The resize triggers an Ink redraw in Claude which streams back via SSE.
         this.sendResize(sessionId);
@@ -2637,7 +2642,7 @@ class CodemanApp {
   }
 
   _updateConversationToggleBtn() {
-    const btn = document.getElementById('cvToggleBtn');
+    const btn = document.getElementById('conversationToggleBtn');
     if (!btn) return;
     btn.style.display = this.activeSessionId ? '' : 'none';
     const isOpen = typeof ConversationView !== 'undefined' && ConversationView.isOpen();

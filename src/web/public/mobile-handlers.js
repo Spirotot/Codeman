@@ -291,6 +291,12 @@ const KeyboardHandler = {
       if (main) {
         main.style.paddingBottom = `${keyboardOffset + 94}px`;
       }
+
+      // Lift CV panel above keyboard so the input bar stays visible
+      const cvPanel = document.getElementById('conversationPanel');
+      if (cvPanel && cvPanel.style.display !== 'none') {
+        cvPanel.style.bottom = `${keyboardOffset}px`;
+      }
     } else {
       this.resetLayout();
     }
@@ -310,6 +316,11 @@ const KeyboardHandler = {
     }
     if (main) {
       main.style.paddingBottom = '';
+    }
+    // Reset CV panel bottom offset
+    const cvPanel = document.getElementById('conversationPanel');
+    if (cvPanel) {
+      cvPanel.style.bottom = '';
     }
   },
 
